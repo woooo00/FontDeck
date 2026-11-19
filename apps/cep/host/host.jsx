@@ -262,7 +262,28 @@ function fdStartService() {
  * 好处：认错一个字不连累旁边，能单独重试；位置不需要"估算对齐"。
  */
 
-var FD_RECOVER_DIR = "C:/Users/6/AppData/Local/FontDeck/recover";
+/*
+ * 调试图的落地目录。
+ *
+ * 以前这里写死了某个用户名的绝对路径 —— 装到别人机器上就直接指向一个
+ * 不存在的目录，转曲识别会在写图上静默失败。改成运行时取：
+ * 先问环境变量（ExtendScript 的 $.getenv 可用），拿不到再从 Folder.userData
+ * 推一层（Roaming → Local，Windows 固定结构）。
+ */
+var FD_RECOVER_DIR = (function () {
+    var base = "";
+    try {
+        var env = $.getenv("LOCALAPPDATA");
+        if (env) base = String(env).replace(/\\/g, "/");
+    } catch (e) { /* 老版本 ExtendScript 可能没有 getenv */ }
+    if (!base) {
+        try {
+            base = String(Folder.userData.fsName).replace(/\\/g, "/").replace(/\/Roaming$/i, "/Local");
+        } catch (e2) { /* ignore */ }
+    }
+    if (!base) base = "C:/Users/Public/AppData/Local";
+    return base + "/FontDeck/recover";
+})();
 
 /*
  * 合并时记住每行原始左下角，供「按行拆分」精确还原。

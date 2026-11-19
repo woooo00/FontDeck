@@ -10,6 +10,9 @@ data/
 *.zip
 *.tmp
 
+# 打包产物：几百 MB，只存在于本机和 Release asset 里
+build/
+
 # Python 编译缓存
 __pycache__/
 *.pyc

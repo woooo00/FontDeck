@@ -29,9 +29,23 @@ export interface OcrResult {
 /** 裁剪识别用：像素框 [左, 上, 右, 下] */
 export type PixelBox = [number, number, number, number];
 
-/** 本项目自带的 Python 解释器（已装 rapidocr-onnxruntime） */
+/**
+ * Python 解释器优先级：
+ *   1) 环境变量（排障时强制指定）
+ *   2) 随包带的便携运行时 —— 安装版走这条，别人的机器上只有这份
+ *   3) 本机开发环境（直接在源码目录里跑时用）
+ *   4) 系统 PATH 里的 python（最后兜底，通常会因为缺 rapidocr 起不来）
+ *
+ * 顺序不能反：安装版机器上并不存在第 3 条那个路径，先探到它就等于每次
+ * 启动都要走一遍失败分支。
+ */
+const APP_ROOT = path.resolve(__dirname, "..", "..", "..");
 const PYTHON_CANDIDATES = [
   process.env.FONTDECK_PYTHON,
+  /* 安装版：<FontDeck>/runtime 与 <FontDeck>/app/<ver> 并列 */
+  path.join(APP_ROOT, "..", "..", "runtime", "python", "python.exe"),
+  /* 开发/源码目录：runtime 就在项目根下 */
+  path.join(APP_ROOT, "runtime", "python", "python.exe"),
   "C:\\Users\\6\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe",
   "python",
 ].filter(Boolean) as string[];

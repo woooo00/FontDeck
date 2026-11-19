@@ -14,19 +14,93 @@
     var BASE = "http://127.0.0.1:" + PORT;
 
     /*
-     * 下面这些路径写死是有意的：面板运行在 CEP 沙盒里，
-     * 拿不到项目根目录（扩展目录和项目目录不是一个地方）。
-     * 换机器 / 换目录时只需要改这几行。
+     * 安装根目录不再写死 —— 面板要装到别人的机器上去，写死路径等于只在这台机器能用。
+     *
+     * 解析顺序：
+     *   1) %LOCALAPPDATA%\FontDeck\current 指针文件（安装脚本写的，内容为一个目录名或绝对路径）
+     *   2) 旧版开发目录（本机回退，保证改造前后都能跑）
+     *
+     * 用指针文件而不是固定路径，是为了让「装新版本」变成改一行指针：
+     * 新版本解压到 app\1.1.0，指针一改就切换，旧目录留着就能回滚。
      */
-    var ROOT = "C:\\Users\\6\\WorkBuddy\\2026-11-09-14-23-57\\fontdeck";
+    var LEGACY_ROOT = "C:\\Users\\6\\WorkBuddy\\2026-11-09-14-23-57\\fontdeck";
+
+    function localAppData() {
+        try {
+            if (typeof process !== "undefined" && process.env && process.env.LOCALAPPDATA) {
+                return process.env.LOCALAPPDATA;
+            }
+        } catch (e) { /* 落到下面 */ }
+        try {
+            var req = nodeRequire();
+            if (req) {
+                return req("path").join(req("os").homedir(), "AppData", "Local");
+            }
+        } catch (e2) { /* ignore */ }
+        return "";
+    }
+
+    function resolveRoot() {
+        var req = nodeRequire();
+        if (req) {
+            try {
+                var fs = req("fs");
+                var path = req("path");
+                var base = localAppData();
+                if (base) {
+                    var ptr = path.join(base, "FontDeck", "current");
+                    if (fs.existsSync(ptr)) {
+                        /* 指针是纯文本，可能被人手改过（正斜杠、多余分隔符、
+                           行尾空格），先规整成 Windows 路径再判断 */
+                        var raw = String(fs.readFileSync(ptr, "utf8") || "")
+                            .replace(/^\s+|\s+$/g, "")
+                            .replace(/\//g, "\\")
+                            .replace(/\\{2,}/g, "\\")
+                            .replace(/\\+$/, "");
+                        if (raw) {
+                            var full = path.isAbsolute(raw)
+                                ? raw
+                                : path.join(base, "FontDeck", "app", raw);
+                            /* 指针有可能指向被手动删掉的目录，验一下再采用 */
+                            if (fs.existsSync(path.join(full, "launcher.pyw"))) return full;
+                        }
+                    }
+                }
+            } catch (e) { /* 指针坏了就走回退 */ }
+        }
+        return LEGACY_ROOT;
+    }
+
+    var ROOT = resolveRoot();
 
     /*
      * 关键：启动器必须是 GUI 子系统程序（pythonw），不能直接 spawn node。
      * node.exe 是控制台程序，即使用 detached + windowsHide 拉起，
      * 在 Win11 上仍可能被 Windows Terminal 接管，留下一个不会自己关的窗口。
      * pythonw 本身没有控制台，它再用 CREATE_NO_WINDOW 拉起服务，全链路无窗口。
+     *
+     * 三种摆法都要认：安装版（<FontDeck>/runtime）、源码目录（<root>/runtime）、
+     * 以及开发机上手工装的那套。
      */
-    var PYTHONW = "C:\\Users\\6\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\pythonw.exe";
+    var PYTHONW = (function () {
+        var req = nodeRequire();
+        if (!req) return "C:\\Users\\6\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\pythonw.exe";
+        try {
+            var fs = req("fs");
+            var path = req("path");
+            var cands = [
+                path.join(ROOT, "runtime", "python", "pythonw.exe"),
+                path.join(ROOT, "..", "..", "runtime", "python", "pythonw.exe"),
+                "C:\\Users\\6\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\pythonw.exe"
+            ];
+            for (var i = 0; i < cands.length; i++) {
+                if (fs.existsSync(cands[i])) return cands[i];
+            }
+            return cands[0];
+        } catch (e) {
+            return "C:\\Users\\6\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\pythonw.exe";
+        }
+    })();
     var LAUNCHER = ROOT + "\\launcher.pyw";
 
     var frame = document.getElementById("frame");

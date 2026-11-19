@@ -2,12 +2,15 @@
 
 ## 现在的状态
 
-已完成：**更新检测 + 面板内提醒**（不下载、不替换任何文件）。
+已完成：**更新检测 + 面板内提醒 + 可下载的发行包**（不自动替换文件）。
 
 - 面板启动 8 秒后查一次，之后每 6 小时一次
 - 发现新版本 → 底部滑入卡片，显示版本号 / 日期 / 更新说明
 - 三个出口：`稍后`（本次不再烦，下次启动还会问）、`跳过这个版本`（永久不再提示这个版本）、`去下载`（开浏览器到 Release 页）
 - 网络不通时**完全静默**，只在控制台留一行日志 —— 用户没点任何按钮，不该被打扰
+
+Release 里放的是真能装的包（自带 Node 和 Python 运行时），
+详见下面「打包产物长什么样」。
 
 控制台手动触发：`__fdCheckUpdate(true)`
 
@@ -33,12 +36,83 @@
 
 ## 怎么发布一个版本
 
-1. 改 `package.json` 的 `version`（**唯一真源**，面板显示的就是它），例如 `1.1.0`
-2. 准备安装包 `fontdeck-setup-1.1.0.exe` 或 `fontdeck-1.1.0.zip`
-3. 建 tag `v1.1.0`，在 GitHub 上发 Release，把安装包作为 asset 上传
-4. Release 说明（body）会被原样显示在提醒卡片里，前 320 字可见，所以**开头就写用户能看懂的变化**，别写 commit 列表
+1. 改 `package.json` 的 `version`（**服务端唯一真源**，面板显示的就是它）
+2. 改 `apps/cep/CSXS/manifest.xml` 三处版本：`ExtensionBundleVersion`、
+   `ExtensionList/Extension@Version`、`ExtensionData/Version`（四段式，如 `1.1.0.0`）
+   —— CEP 用这个决定要不要重载面板壳，漏改会导致装了新版但面板还是旧的
+3. 打包：
+
+   ```bash
+   python scripts/build-release.py
+   ```
+
+   产物在 `build/dist/FontDeck-<ver>.zip`，约 150 MB（解压后 390 MB）
+4. 发 Release：
+
+   ```bash
+   gh release create v1.1.0 --title "1.1.0 · 说明" \
+       --notes-file build/release-notes.md \
+       build/dist/FontDeck-1.1.0.zip
+   ```
+
+   `gh` 在 `C:\Users\6\.workbuddy\binaries\gh\bin\gh.exe`，
+   并且**它要求 PATH 里有 git**，否则报 `unable to find git executable`：
+   把 `C:\Users\6\.workbuddy\binaries\PortableGit\versions\1.3.0\cmd` 加进 PATH。
+5. Release 说明（body）会被原样显示在提醒卡片里，前 320 字可见，所以**开头就写用户能看懂的变化**，别写 commit 列表
 
 `tag_name` 有没有前缀 `v` 都行，比较时会去掉。
+
+## 打包产物长什么样
+
+```
+FontDeck-1.1.0/
+├── app/               应用代码，约 40 MB（每版本一份）
+│   ├── apps/ packages/ data/ node_modules/
+│   ├── launcher.pyw
+│   └── package.json
+├── runtime/           运行时，约 350 MB（所有版本共享）
+│   ├── node/node.exe
+│   └── python/        便携 Python（含 RapidOCR / onnxruntime / opencv）
+├── panel/             CEP 面板壳
+├── install.cmd        安装脚本（纯 ASCII，cmd 按系统代码页逐字节解析）
+├── README.txt
+└── VERSION
+```
+
+装完之后：
+
+```
+%LOCALAPPDATA%\FontDeck\
+├── runtime\           共享，升级不重装
+├── app\1.1.0\         每版本一份
+├── app\1.0.9\         上一版，留给回滚
+├── current            文本文件，内容是当前生效目录的绝对路径
+└── current.previous   上一版的路径
+```
+
+`boot.js` 启动时读 `current`，所以切换/回滚版本就是改这一行文本。
+
+**为什么 runtime 共享而不是每版一份**：Python 那套 350 MB，
+每版复制一份，装三个版本就 1 GB 出去了。共享的代价是升级 runtime 会影响所有版本，
+但 runtime（Node + Python + 那几个 wheel）一年也动不了几次。
+
+**为什么不用 pkg / SEA 打成单 exe**：服务依赖 koffi（FFI，调 Win32 装字体）、
+@resvg 的 .node、以及一整个 Python 环境。SEA 只能塞一个 JS 入口，
+塞不了这些原生资产，还得自己解压到临时目录再改 DLL 搜索路径 ——
+比发一个目录复杂，也更容易被杀软拦。
+
+## 路径约束（改代码时要守）
+
+启动链路里不能再出现绝对路径，三种摆法都要能认：
+
+| 场景 | app 根 | runtime 位置 |
+|---|---|---|
+| 源码目录直接跑 | `<repo>` | `<repo>/runtime`（可能不存在，回退本机） |
+| 安装版 | `%LOCALAPPDATA%\FontDeck\app\<ver>` | `%LOCALAPPDATA%\FontDeck\runtime` |
+
+对应 `launcher.pyw:find_node`、`packages/ocr/src/client.ts:PYTHON_CANDIDATES`、
+`apps/cep/js/boot.js:PYTHONW` 三处都写了 `<root>/runtime` 和 `<root>/../../runtime` 两个候选。
+加新的运行时依赖时，这三处要一起看。
 
 ## 三层更新，生效代价不同
 
@@ -50,15 +124,16 @@
 
 面板壳一年改不了几次，所以自动更新优先覆盖前两层。
 
-## 还没做（下一步）
+## 还没做
 
-**下载安装**目前只到"提醒 + 打开 Release 页"，没有自动下载替换。要做完整链路，课前改造有三件：
+**面板里点"去下载"只打开 Release 页面**，不会自动下载替换。要变成一键更新，
+需要补一段：下载 zip → 校验 → 解压到 `app\<ver>` → 改 `current` → 重启服务。
+指针机制已经就位，剩下的是下载与校验本身，以及失败时把 `current` 写回去。
 
-1. **路径去硬编码**：`launcher.pyw` 和 `apps/cep/js/boot.js` 里写死了项目绝对路径和 node 路径。必须改成基于自身位置推导，否则装到 `%LOCALAPPDATA%` 下就全错。
-2. **运行时打包**：现在的形态依赖本机 `node.exe` + `tsx` + 100MB `node_modules`，**别人机器装不了**。需要：esbuild 把服务端 bundle 成 JS、裁剪依赖、随包带 `node.exe`（约 87MB）。
-3. **版本化安装目录**：`%LOCALAPPDATA%\FontDeck\app\<ver>\` + 一个 `current` 指针，保留上一版用于回滚；`data\` 留在外面跨版本共享。
+另外两个已知缺口：
 
-这三件做完，才能做"下载 → 校验 SHA256 → 解压到新版本目录 → 切指针 → 重启服务 → 提示重开 AI"。
+- 目前只发 zip + `install.cmd`，没有真正的安装器（无开始菜单项、无卸载入口）
+- `install.cmd` 不做完整性校验，包损坏时只能靠 xcopy 的 errorlevel 看出来
 
 ## 一个已知的坑
 

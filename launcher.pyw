@@ -19,13 +19,50 @@ Usage:
 
 import http.client
 import os
+import shutil
 import subprocess
 import sys
 import time
 
-ROOT = r"C:\Users\6\WorkBuddy\2026-11-09-14-23-57\fontdeck"
+# 开发机上 node 不在 PATH 里（是工具链自带的），留一条兜底。
+# 安装版机器上没有这个路径，会自然落到系统 PATH 的 node。
+DEV_NODE = r"C:\Users\6\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+
+
+def find_root():
+    """定位安装根目录。
+
+    本文件就躺在这个根目录里，所以以它自己为锚点，而不是写死某个绝对路径。
+    早期版本写死了开发机的目录，装到别人的机器上每一条路径都是错的。
+    """
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def find_node(root):
+    """优先用随包带的运行时，其次环境变量，最后退回系统 PATH 里的 node。
+
+    随包优先是刻意的：别人机器上的 node 版本可能差很多，而服务依赖
+    tsx（esbuild 原生二进制）和 koffi（FFI），版本一乱就是启动失败。
+
+    运行时有两种摆法，都要认：
+      源码/开发目录   <root>/node_modules 与 <root>/runtime 同级
+      安装版          <FontDeck>/runtime 与 <FontDeck>/app/<ver> 并列，
+                      也就是 <root>/../../runtime
+    """
+    for cand in (
+        os.environ.get("FONTDECK_NODE"),
+        os.path.join(root, "runtime", "node", "node.exe"),
+        os.path.join(root, "..", "..", "runtime", "node", "node.exe"),
+        DEV_NODE,
+    ):
+        if cand and os.path.isfile(cand):
+            return os.path.normpath(cand)
+    return "node"
+
+
+ROOT = find_root()
 PORT = int(os.environ.get("FONTDECK_PORT", "47615"))
-NODE_EXE = r"C:\Users\6\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+NODE_EXE = find_node(ROOT)
 TSX = os.path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs")
 ENTRY = os.path.join(ROOT, "apps", "service", "src", "main.ts")
 LOG = os.path.join(ROOT, "data", "service.log")
@@ -117,7 +154,13 @@ def prune_debug_images():
 
 
 def main():
-    for path in (NODE_EXE, TSX, ENTRY):
+    # NODE_EXE 可能是 "node"（走系统 PATH），不能拿 os.path.exists 判断
+    node_ok = os.path.isfile(NODE_EXE) or shutil.which(NODE_EXE) is not None
+    if not node_ok:
+        if sys.stderr:
+            sys.stderr.write("missing node runtime: %s\n" % NODE_EXE)
+        return 1
+    for path in (TSX, ENTRY):
         if not os.path.exists(path):
             if sys.stderr:
                 sys.stderr.write("missing: %s\n" % path)
