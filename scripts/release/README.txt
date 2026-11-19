@@ -13,13 +13,19 @@ Illustrator 字体库面板：浏览本机字体、按语言/衬线/字重筛选
 3. 完全退出 Illustrator（不是只关掉面板窗口），再重新打开。
 4. 菜单 窗口 > 扩展功能 > FontDeck 字体库。
 
-安装脚本不需要管理员权限。它只往这两个地方写东西：
+安装脚本不需要管理员权限。它只往这三个地方写东西：
 
     %LOCALAPPDATA%\FontDeck\            程序本体（约 450 MB）
     %APPDATA%\Adobe\CEP\extensions\     面板外壳（约 200 KB）
+    HKCU\Software\Adobe\CSXS.<n>        PlayerDebugMode=1（见下）
 
 其中 %LOCALAPPDATA%\FontDeck\runtime\ 是所有版本共享的运行时（Node + Python），
 升级时不会重复占用磁盘；app\ 下每个版本一个目录，约 40 MB。
+
+最后一步是打开 CEP 的 PlayerDebugMode。这个面板没有 Adobe 的商业签名，
+不打开这个开关，Illustrator 会把菜单项列出来但**打开是空白**，而且不报错。
+脚本会自动尝试三种写法，窗口里会显示 ok (via python / powershell / reg)；
+如果显示 WARNING，看下面"面板是空白"一节手动补。
 
 
 首次打开要等几秒
@@ -35,6 +41,17 @@ Illustrator 字体库面板：浏览本机字体、按语言/衬线/字重筛选
 先看 %LOCALAPPDATA%\FontDeck\app\<版本>\data\service.log，服务端的问题都在里面。
 
 常见情况：
+
+  菜单里有 FontDeck，但打开是空白窗口
+      未签名扩展没被放行。确认这两个键的值是字符串 1：
+          HKCU\Software\Adobe\CSXS.11  PlayerDebugMode
+          HKCU\Software\Adobe\CSXS.12  PlayerDebugMode
+          HKCU\Software\Adobe\CSXS.13  PlayerDebugMode
+      没有就自己建（32/64 位都写 HKCU 即可，不需要管理员权限）：
+          注册表编辑器 或者
+          powershell -Command "New-ItemProperty -Path 'HKCU:\Software\Adobe\CSXS.12'
+            -Name PlayerDebugMode -Value '1' -PropertyType String -Force"
+      改完要**完全退出 Illustrator** 再开。
 
   面板一直显示"正在连接字体服务"
       多半是端口 47615 被别的东西占了。命令行执行
@@ -63,8 +80,10 @@ Illustrator 字体库面板：浏览本机字体、按语言/衬线/字重筛选
 升级
 ----
 
-面板检测到新版本会从右下角弹一张卡片，点"去下载"会打开 GitHub Release 页面。
-下载后覆盖安装即可 —— 安装脚本会切换版本指针，旧版本目录留着，出问题能退回。
+面板启动后会自动检查新版本，发现就弹一张卡片，点"立即更新"就行：
+下载、安装、切版本指针全自动，装完提示完全退出 Illustrator 再开一次。
+
+顶栏版本号旁边出现"有更新"胶囊，说明你之前点了"稍后"，点胶囊能重新打开卡片。
 
 手动升级：解压新包，双击 install.cmd，再重开 Illustrator。
 

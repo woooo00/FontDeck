@@ -48,6 +48,24 @@ launcher 探活会认为「已经在跑」，**新版本永远不会被拉起来
 
 `current.previous` 保留上一版的路径，回滚就是把它写回 `current`。
 
+## 发给没装过的机器
+
+只能发**完整包** `FontDeck-<ver>.zip`（150 MB，里面带 node + python 运行时），
+`-update.zip` 只含 app + panel，是给已装机器的自动更新用的，单独装会缺运行时。
+
+对方机器不需要 Node、不需要 Python、不需要管理员权限。装完写三处：
+`%LOCALAPPDATA%\FontDeck\`、`%APPDATA%\Adobe\CEP\extensions\com.fontdeck.panel`、
+以及 `HKCU\Software\Adobe\CSXS.<9-13>` 的 `PlayerDebugMode=1`。
+
+最后这一条是硬要求，不是保险措施：面板没有 Adobe 商业签名，不开这个开关，
+Illustrator 会把「窗口 > 扩展功能 > FontDeck」列出来，**点开是空白且不报错**。
+装完一定要看窗口里有没有打出 `ok (via python)`（或 powershell / reg）。
+
+为什么用 Python 写注册表而不是 `reg add`：部分公司镜像把 `reg.exe` 放进了
+程序黑名单（本机就是），`reg add` 会被安全策略直接拦掉、静默失败。
+`install.cmd` 里是三级兜底：包内 python 调 `winreg` → powershell `New-ItemProperty` → `reg add`，
+三级全失败才打 WARNING 让人按 README 手动补。
+
 ## 怎么启用
 
 填 `data/update.json`：

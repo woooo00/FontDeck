@@ -42,14 +42,14 @@ if not exist "%FD%\app" mkdir "%FD%\app" >nul 2>&1
 
 rem --- runtime is shared between versions; only lay it down once -------------
 if exist "%RUNTIME%\node\node.exe" if exist "%RUNTIME%\python\python.exe" goto :runtime_ready
-echo   [1/3] runtime (node + python, about 400 MB) ...
+echo   [1/4] runtime (node + python, about 400 MB) ...
 if exist "%RUNTIME%" rmdir /s /q "%RUNTIME%"
 xcopy "%SRC%\runtime" "%RUNTIME%\" /e /i /q /h /y >nul
 if errorlevel 1 goto :fail_runtime
 :runtime_ready
 
 rem --- application code ------------------------------------------------------
-echo   [2/3] application ...
+echo   [2/4] application ...
 if exist "%APPDIR%" rmdir /s /q "%APPDIR%"
 xcopy "%SRC%\app" "%APPDIR%\" /e /i /q /h /y >nul
 if errorlevel 1 goto :fail_app
@@ -67,11 +67,47 @@ if exist "%FD%\current" (
 >"%FD%\current" echo %APPDIR%
 
 rem --- panel shell -----------------------------------------------------------
-echo   [3/3] Illustrator panel ...
+echo   [3/4] Illustrator panel ...
 if not exist "%APPDATA%\Adobe\CEP\extensions" mkdir "%APPDATA%\Adobe\CEP\extensions" >nul 2>&1
 if exist "%PANEL%" rmdir /s /q "%PANEL%"
 xcopy "%SRC%\panel" "%PANEL%\" /e /i /q /h /y >nul
 if errorlevel 1 goto :fail_panel
+
+rem --- unsigned extension: Illustrator refuses to load it unless
+rem     PlayerDebugMode=1, and it fails silently (menu item appears, nothing
+rem     opens). Try the bundled python first -- a direct winreg call, which
+rem     survives the reg.exe program blacklist some company images have.
+echo   [4/4] CEP debug mode ...
+set "DBG="
+if not exist "%RUNTIME%\python\python.exe" goto :dbg_ps
+"%RUNTIME%\python\python.exe" "%SRC%\tools\set-debug.py" >nul 2>&1
+if errorlevel 1 goto :dbg_ps
+set "DBG=python"
+goto :dbg_done
+
+:dbg_ps
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$n=9,10,11,12,13; foreach($i in $n){$p='HKCU:\Software\Adobe\CSXS.'+$i; if(-not(Test-Path $p)){New-Item -Path $p -Force|Out-Null}; New-ItemProperty -Path $p -Name PlayerDebugMode -Value '1' -PropertyType String -Force|Out-Null}; exit 0" >nul 2>&1
+if errorlevel 1 goto :dbg_reg
+set "DBG=powershell"
+goto :dbg_done
+
+:dbg_reg
+for %%n in (9 10 11 12 13) do reg add "HKCU\Software\Adobe\CSXS.%%n" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
+reg query "HKCU\Software\Adobe\CSXS.13" /v PlayerDebugMode >nul 2>&1
+if errorlevel 1 goto :dbg_fail
+set "DBG=reg"
+
+:dbg_done
+if "%DBG%"=="" goto :dbg_fail
+echo         ok (via %DBG%)
+goto :done
+
+:dbg_fail
+echo         WARNING: could not enable PlayerDebugMode.
+echo         The panel will show up in the menu but open a blank window.
+echo         Fix it by hand, see README.txt section "Panel does not show up".
+
+:done
 
 rem --- stop the old service, otherwise it keeps holding port 47615 and the
 rem     new version would never be the one answering ------------------------

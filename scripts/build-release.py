@@ -296,6 +296,15 @@ def stage_scripts(stage, version):
     with open(os.path.join(stage, "VERSION"), "w", encoding="ascii") as f:
         f.write(version + "\n")
 
+    # 小工具：写 CEP 的 PlayerDebugMode。未签名扩展靠它才能被加载，
+    # 而 reg.exe 在部分公司镜像上是被拉黑的，所以用 Python 直接调 winreg。
+    tools = os.path.join(stage, "tools")
+    os.makedirs(tools, exist_ok=True)
+    shutil.copy2(
+        os.path.join(ROOT, "scripts", "release", "set-debug.py"),
+        os.path.join(tools, "set-debug.py"),
+    )
+
 
 def make_zip(stage, version):
     os.makedirs(DIST, exist_ok=True)
