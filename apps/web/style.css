@@ -2487,3 +2487,141 @@ body[data-pane="recover"] .tabs {
   color: var(--ink);
   font-weight: 700;
 }
+
+/* ================= 首次打开的欢迎卡 =================
+ * 只在第一次进面板时出现一次，之后由 localStorage 记住。
+ * 排版克制：一条主色标签 + 一句说明，避免做成营销页。
+ */
+.wc-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(22, 22, 44, 0.34);
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+
+/* display:flex 会盖掉 [hidden] 的 display:none，必须显式压回去 */
+.wc-mask[hidden] { display: none !important; }
+
+.wc-mask.is-on { opacity: 1; }
+
+.wc-card {
+  width: 100%;
+  max-width: 340px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 18px 18px 16px;
+  border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 24px 60px -24px rgba(22, 22, 44, 0.45),
+    0 2px 8px rgba(22, 22, 44, 0.08);
+  transform: translateY(10px) scale(0.985);
+  transition: transform 0.24s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+.wc-mask.is-on .wc-card { transform: none; }
+
+.wc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.wc-logo {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #6b61f2, var(--accent));
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 14px -8px rgba(79, 70, 229, 0.85);
+}
+
+.wc-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.wc-sub {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* 标签固定宽度，三条说明左边缘对齐 —— 比逐条缩进好扫 */
+/* 整个列表共用一套两列网格（不是每条各自一套），标签才会严格对齐成列。
+   标签栏不能定死 56px —— 「客户的稿子」5 个字放不进 3-4 个字的宽度，
+   会被挤到折行；这里由 max-content 取最长那条的宽度，随文案自适应。 */
+.wc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 9px;
+  row-gap: 9px;
+  align-items: baseline;
+}
+
+/* li 只剩语义，盒子交出去，b / span 直接成为上面那套网格的子项 */
+.wc-list li {
+  display: contents;
+}
+
+.wc-list b {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.wc-list span {
+  font-size: 11.5px;
+  line-height: 1.62;
+  color: var(--ink-2);
+}
+
+
+.wc-foot {
+  margin: 13px 0 14px;
+  font-size: 10.5px;
+  line-height: 1.65;
+  /* 用 muted 而不是 faint：10.5px 的浅灰在压暗背景上几乎读不清 */
+  color: var(--muted);
+}
+
+.wc-go {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: linear-gradient(180deg, #5f56ee 0%, var(--accent) 100%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 6px 18px -8px rgba(79, 70, 229, 0.6);
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.wc-go:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}

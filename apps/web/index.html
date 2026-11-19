@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FontDeck · 字体库</title>
-<link rel="stylesheet" href="style.css?v=60">
+<link rel="stylesheet" href="style.css?v=62">
 </head>
 <body>
 
@@ -108,11 +108,37 @@
   <div id="drawerBody"></div>
 </aside>
 
-<script src="app.js?v=51"></script>
+<!-- 首次打开的一次性欢迎卡：一台机器只弹一次，标记存 localStorage，
+     跟 origin 走，升级换版本不会重弹 -->
+<div class="wc-mask" id="welcome" hidden>
+  <div class="wc-card" role="dialog" aria-modal="true" aria-labelledby="wcTitle">
+    <div class="wc-head">
+      <span class="wc-logo" aria-hidden="true">F</span>
+      <div>
+        <h1 class="wc-title" id="wcTitle">FontDeck</h1>
+        <p class="wc-sub">您的专属字体管家</p>
+      </div>
+    </div>
+
+    <ul class="wc-list">
+      <li><b>字体库</b><span>搜索、按语言和字重筛，大图预览不费眼</span></li>
+      <li><b>直接用</b><span>选中文字，一键套上面板里的字体，不用翻找字体菜单</span></li>
+      <li><b>恢复转曲</b><span>转成轮廓的字，可以再次转换成可编辑文字</span></li>
+      <li><b>客户的稿子</b><span>转曲了？它能告诉你原来用的是哪个字体</span></li>
+    </ul>
+
+    <p class="wc-foot">第一次打开要扫一遍本机字体，约 5–20 秒，之后秒开。</p>
+
+    <button class="wc-go" id="wcGo" type="button">开始使用</button>
+  </div>
+</div>
+
+<script src="app.js?v=52"></script>
 <script src="update.js?v=5"></script>
 
 <div id="dropHint" class="drop-hint"><span>松开即可安装字体</span></div>
 <div id="toast" class="toast"></div>
+
 
 </body>
 </html>

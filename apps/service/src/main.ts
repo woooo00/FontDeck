@@ -8,6 +8,7 @@
  */
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,13 +47,17 @@ function buildReportText(id: string, body: any): string {
   const font = ctx.font ?? {};
   const apply = ctx.apply ?? {};
   const ui = ctx.ui ?? {};
+  /* 环境：宿主版本可能只在 recover 流程里才拿到，这里统一兜一层 */
+  const env = body.env ?? {};
+  const host = env.host ?? {};
+  const aiVersion = body.appVersion || host.appVersion || "未知";
   const L: string[] = [];
   const push = (s = "") => L.push(s);
 
   push(`=== FontDeck 诊断日志 ${id} ===`);
   push(`时间：${new Date().toLocaleString("zh-CN")}`);
   push(
-    `AI：${body.appVersion || "未知"}   面板：${body.uiVersion || "未知"}   服务：${body.serviceGeneratedAt || "未知"}`
+    `AI：${aiVersion}   面板：${body.uiVersion || "未知"}   服务：${body.serviceGeneratedAt || "未知"}`
   );
   push(`问题：${(body.issues || []).join("、") || "未选择"}`);
   if (body.note) push(`备注：${body.note}`);
@@ -256,6 +261,32 @@ function buildReportText(id: string, body: any): string {
     }
   } catch (e: any) {
     push("  读取失败：" + String(e?.message ?? e));
+  }
+
+  push("");
+  push("--- 环境 ---");
+  {
+    /* 宿主（Illustrator）与 CEP 是两个版本号，混在一起看会误判：
+       「AI 29.6 但 CEP 10」说明面板跑在降级环境里，界面走样是预期的 */
+    push(
+      `Illustrator：${aiVersion}` +
+        (host.appName ? ` (${host.appName})` : "") +
+        (host.appLocale ? `  语言 ${host.appLocale}` : "")
+    );
+    push(`CEP：${env.cep || "未知"}   Chromium：${env.chrome || "未知"}`);
+    push(
+      `系统：${env.platform || "?"}   DPR ${env.dpr ?? "?"}   屏幕 ${env.screen || "?"}   面板 ${env.panel || "?"}`
+    );
+    push(
+      `CPU ${env.cpu ?? "?"} 核   内存 ${env.mem ?? "?"} GB   UA：${env.ua || "?"}`
+    );
+    /* 服务端自己的运行环境：同一台机器上可能同时装了 Node 和便携运行时，
+       出问题时需要确认服务是被哪个解释器拉起来的 */
+    push(
+      `服务进程：pid ${process.pid}  Node ${process.version}  ${os.platform()} ${os.release()}  ` +
+        `${os.cpus().length} 核  ${Math.round(os.totalmem() / 1073741824 * 10) / 10} GB  ` +
+        `已运行 ${Math.round(process.uptime())}s`
+    );
   }
 
   push("");

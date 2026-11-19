@@ -1914,6 +1914,7 @@
       appVersion: reportCtx.appVersion || "",
       uiVersion: "v" + uiVer,
       serviceGeneratedAt: "",
+      env: collectEnv(),
       context: {
         geom: reportCtx.geom || {},
         recognize: reportCtx.recognize || {},
@@ -1985,6 +1986,46 @@
           btn.textContent = "生成并复制日志";
         }
       });
+  }
+
+  /**
+   * 收集运行环境，写进诊断日志。
+   *
+   * 「界面不一样」「面板打不开」这类问题，答案基本都在这几行里：
+   * 宿主 AI 版本、CEP 版本（决定 Chromium 新旧，进而决定 CSS 能用到哪些）、
+   * 系统缩放（DPR）、面板宽度。以前报告里只有 AI 版本，其余靠猜。
+   */
+  function collectEnv() {
+    var env = {};
+
+    try {
+      if (window.__adobe_cep__ && window.__adobe_cep__.getHostEnvironment) {
+        var raw = window.__adobe_cep__.getHostEnvironment();
+        env.host = typeof raw === "string" ? JSON.parse(raw) : raw;
+      }
+    } catch (e) {
+      /* 非 CEP 环境（浏览器里调试） */
+    }
+
+    try {
+      if (window.__adobe_cep__ && window.__adobe_cep__.getCurrentApiVersion) {
+        env.cep = String(window.__adobe_cep__.getCurrentApiVersion());
+      }
+    } catch (e) {}
+
+    var ua = navigator.userAgent || "";
+    env.ua = ua;
+    var m = ua.match(/Chrome\/([\d.]+)/);
+    env.chrome = m ? m[1] : "";
+    env.platform = navigator.platform || "";
+    /* DPR 不是整数时说明系统开了缩放，面板字号会与设计稿不一致 */
+    env.dpr = window.devicePixelRatio || 1;
+    env.screen = screen.width + "x" + screen.height;
+    env.panel = window.innerWidth + "x" + window.innerHeight;
+    env.cpu = navigator.hardwareConcurrency || "";
+    env.mem = navigator.deviceMemory || "";
+
+    return env;
   }
 
   /**
@@ -2987,6 +3028,67 @@
     });
   }, 3 * 60 * 1000);
 
+  /* ---------------- 首次打开的一次性欢迎卡 ---------------- */
+
+  /*
+   * 只在真正第一次打开面板时出现。
+   *
+   * 标记存 localStorage：CEP 里它跟着 origin（http://127.0.0.1:47615）走，
+   * 换版本、重装面板都不会重弹 —— 和「跳过这个版本」用的是同一套机制。
+   * 用户明确要求「跟机器走，不跟版本走」，所以不要改用 data 目录里的文件
+   * （data 是跟着 app\<版本> 走的，升级就会重弹）。
+   */
+  var WELCOME_KEY = "fontdeck.welcome.seen";
+
+  function initWelcome() {
+    var el = document.getElementById("welcome");
+    if (!el) return;
+
+    /* 调试用：?welcome=1 强制再看一次，不用去清 localStorage */
+    var forced = /[?&]welcome=1\b/.test(location.search || "");
+
+    var seen = false;
+    try {
+      seen = localStorage.getItem(WELCOME_KEY) === "1";
+    } catch (e) {
+      /* localStorage 被策略关掉时，宁可每次都弹也别报错挡住界面 */
+    }
+    if (seen && !forced) return;
+
+    /*
+     * 一显示就记「已看过」，不等用户点按钮。
+     * 否则用户看完直接把面板关了，下次还会弹 —— 那就不是「只弹一次」了。
+     */
+    try {
+      localStorage.setItem(WELCOME_KEY, "1");
+    } catch (e) {}
+
+    el.hidden = false;
+    requestAnimationFrame(function () {
+      el.classList.add("is-on");
+    });
+
+    var closed = false;
+    function close() {
+      if (closed) return;
+      closed = true;
+      el.classList.remove("is-on");
+      setTimeout(function () {
+        el.hidden = true;
+      }, 220);
+    }
+
+    var go = document.getElementById("wcGo");
+    if (go) go.addEventListener("click", close);
+    /* 点遮罩空白处、按 Esc 也能关：别逼用户去找那个按钮 */
+    el.addEventListener("click", function (e) {
+      if (e.target === el) close();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" || e.keyCode === 27) close();
+    });
+  }
+
   /* ---------------- 深链：#font=<id> 直接打开详情 ---------------- */
 
   function openFromHash() {
@@ -2996,6 +3098,7 @@
 
   window.addEventListener("hashchange", openFromHash);
 
+  initWelcome();
   load(true);
   openFromHash();
 })();
