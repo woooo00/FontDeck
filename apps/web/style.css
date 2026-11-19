@@ -1090,6 +1090,51 @@ body[data-pane="recover"] .tabs {
   white-space: nowrap;
 }
 
+/* 品牌名后面的版本号。brand 是 baseline 对齐 + 8px gap，
+   小字按 gap 摆会离得太远，用负 margin 收回到 4px 左右。 */
+.app-ver {
+  margin-left: -4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  flex: none;
+  cursor: default;
+  user-select: none;
+}
+
+/* 「有更新」：整条顶栏都是灰字，这里要跳出来。
+   用主色实底而不是描边 —— 描边在浅色背景上还是会被当成普通标签。
+   brand 是 baseline 对齐，胶囊得自己居中，否则底边会跟文字基线平齐。 */
+.upd-pill {
+  flex: none;
+  align-self: center;
+  height: 16px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: linear-gradient(180deg, #6b61f2, var(--accent));
+  color: #fff;
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  box-shadow: 0 1px 5px rgba(91, 82, 233, 0.32);
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.upd-pill:hover {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.upd-pill:active {
+  transform: translateY(0);
+}
+
 .search-wrap { position: relative; }
 
 .search-row {
@@ -2368,4 +2413,42 @@ body[data-pane="recover"] .tabs {
 .upd-x:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* ---- 更新日志 ----
+ * 弹窗里不能再像以前那样截断 260 字：用户要判断"这个版本值不值得现在装"，
+ * 看半截说明等于没看。改成固定高度的滚动区，长日志自己滚，不撑大卡片。
+ */
+.upd-log {
+  margin-top: 8px;
+  border-radius: var(--r-sm);
+  background: rgba(22, 22, 44, 0.035);
+  border: 1px solid rgba(22, 22, 44, 0.06);
+  overflow: hidden;
+}
+
+.upd-log-h {
+  padding: 6px 9px 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+
+.upd-log-b {
+  padding: 4px 9px 8px;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: 11px;
+  line-height: 1.62;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 更新日志里的小标题（原 markdown 的 ## / ###） */
+.upd-log-b b {
+  color: var(--ink);
+  font-weight: 700;
 }

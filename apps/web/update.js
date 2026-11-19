@@ -23,6 +23,8 @@
 
   var card = null;
   var running = false;
+  /** 待安装的更新信息。用户点「稍后」后靠它把弹窗重新叫出来 */
+  var pendingInfo = null;
 
   /* ---------------------------------------------------------------- 版本比较 */
 
@@ -68,10 +70,12 @@
       .replace(/>/g, "&gt;");
   }
 
-  /** Release 说明里塞满 markdown 标记，直接显示很难看；只留文字和换行 */
+  /** Release 说明里塞满 markdown 标记，直接显示很难看；只留文字和换行。
+   *  markdown 的标题行单独打上 \u0001 前缀，渲染时才能还原成加粗小标题 ——
+   *  否则「本次更新」和「已知问题」会跟正文糊成一片。 */
   function plainNotes(body) {
     return String(body || "")
-      .replace(/^#{1,6}\s*/gm, "")
+      .replace(/^#{1,6}[ \t]*(.+)$/gm, "\u0001$1")
       .replace(/\*\*|__|`/g, "")
       .replace(/^\s*[-*+]\s+/gm, "· ")
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
@@ -79,13 +83,79 @@
       .trim();
   }
 
+  /** 把 plainNotes 的结果转成安全的 HTML：标题行加粗，其余原样转义 */
+  function notesHtml(notes) {
+    return String(notes)
+      .split("\n")
+      .map(function (line) {
+        var isHeading = line.charAt(0) === "\u0001";
+        if (isHeading) line = line.slice(1);
+        return isHeading ? "<b>" + esc(line) + "</b>" : esc(line);
+      })
+      .join("\n");
+  }
+
   function mb(n) {
     return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
   }
 
+  /* ---------------------------------------------------------------- 顶栏状态 */
+
+  var verEl = null;
+  var pillEl = null;
+
+  /**
+   * 拿胶囊元素，顺手把点击绑上。
+   *
+   * 绑定必须集中在这里，不能只写在 showPill 里：卡片一出现就会调 hidePill()
+   * 把它取出来，之后再 showPill 时 `if (!pillEl)` 已经是 false，事件永远绑不上 ——
+   * 表现就是胶囊显示正常、点了没反应。
+   */
+  function ensurePill() {
+    if (pillEl) return pillEl;
+    pillEl = document.getElementById("updPill");
+    if (pillEl) {
+      pillEl.title = "有新版本可用，点这里查看";
+      pillEl.addEventListener("click", function () {
+        /* 卡片还在就不重复开；已经关掉了就把同一份信息重新摆出来 */
+        if (pendingInfo && !card) show(pendingInfo);
+      });
+    }
+    return pillEl;
+  }
+
+  /** 卡片关掉之后用什么方式让用户知道「还有更新没装」——就是这个小胶囊 */
+  function showPill() {
+    var el = ensurePill();
+    if (el) el.hidden = false;
+  }
+
+  function hidePill() {
+    var el = ensurePill();
+    if (el) el.hidden = true;
+  }
+
+  /** 品牌名后面的版本号，取自服务端实际在跑的版本，不是写死的 */
+  function setVersion(v) {
+    if (!v) return;
+    if (!verEl) verEl = document.getElementById("appVer");
+    if (!verEl) return;
+    verEl.textContent = "v" + v;
+    verEl.title = "当前运行版本 " + v;
+    verEl.hidden = false;
+  }
+
   /* ---------------------------------------------------------------- 卡片 */
 
-  function close() {
+  /**
+   * 关闭卡片。
+   *
+   * reason 决定要不要留一个"有更新"胶囊：
+   *   later —— 这次先不看，但更新还在，顶栏给个入口
+   *   skip  —— 跳过这个版本，不再提
+   *   done  —— 装着装着关掉（理论上被 lock 挡住），不留胶囊
+   */
+  function close(reason) {
     if (!card) return;
     card.className = "upd-card";
     var el = card;
@@ -93,13 +163,19 @@
     setTimeout(function () {
       if (el && el.parentNode) el.parentNode.removeChild(el);
     }, 220);
+
+    if (reason === "later" && pendingInfo) showPill();
   }
 
   function show(info) {
     if (card) return;
 
+    /* 弹窗都出来了，胶囊就别再占位置 */
+    hidePill();
+
+    /* 日志不截断：用户要判断「这个版本值不值得现在装」，看半截说明等于没看。
+       超长用滚动区装，不撑大卡片。 */
     var notes = plainNotes(info.body);
-    if (notes.length > 260) notes = notes.slice(0, 260).trim() + "…";
 
     var el = document.createElement("div");
     el.className = "upd-card";
@@ -110,7 +186,12 @@
       '<button class="upd-x" type="button" aria-label="稍后">×</button>' +
       "</div>" +
       (info.date ? '<div class="upd-date">发布于 ' + esc(info.date) + "</div>" : "") +
-      (notes ? '<p class="upd-notes">' + esc(notes) + "</p>" : "") +
+      (notes
+        ? '<div class="upd-log">' +
+          '<div class="upd-log-h">更新日志</div>' +
+          '<div class="upd-log-b">' + notesHtml(notes) + "</div>" +
+          "</div>"
+        : "") +
       '<div class="upd-actions">' +
       '<button class="btn upd-later" type="button">稍后</button>' +
       '<button class="btn primary upd-go" type="button">立即更新</button>' +
@@ -131,11 +212,16 @@
       if (card) card.className = "upd-card is-on";
     });
 
-    el.querySelector(".upd-x").addEventListener("click", close);
-    el.querySelector(".upd-later").addEventListener("click", close);
+    el.querySelector(".upd-x").addEventListener("click", function () {
+      close("later");
+    });
+    el.querySelector(".upd-later").addEventListener("click", function () {
+      close("later");
+    });
     el.querySelector(".upd-skip").addEventListener("click", function () {
       ls(K_SKIP, info.latest);
-      close();
+      pendingInfo = null;
+      close("skip");
     });
     el.querySelector(".upd-go").addEventListener("click", function () {
       startUpdate(info);
@@ -309,6 +395,10 @@
   function showSuccess(s, info) {
     if (!card) return;
 
+    /* 已经装上了，这一份更新信息作废，顶栏胶囊也不该再出现 */
+    pendingInfo = null;
+    hidePill();
+
     var extra = s.panelUpdated === false
       ? '<p class="upd-warn">面板外壳没能更新（' + esc(s.panelError || "文件被 Illustrator 占用") +
         "）。功能已经生效，只是外壳还是旧的，下次装完整包会一起修好。</p>"
@@ -480,7 +570,12 @@
     return fetch("/api/update/info")
       .then(function (r) { return r.json(); })
       .then(function (info) {
-        if (!info || !info.ok || info.check === false) return null;
+        if (!info || !info.ok) return null;
+
+        /* 版本号跟的是服务端实际在跑的版本，不是页面上写死的 */
+        setVersion(info.current);
+
+        if (info.check === false) return null;
         if (!info.repo && !info.api) {
           /* 没配仓库就是「还没接入更新」，静默跳过，不打扰用户 */
           return null;
@@ -500,7 +595,8 @@
           var asset = pickAsset(rel);
           if (!asset) return null;  /* 没资产的 release 不提示，点了也没用 */
 
-          show({
+          /* 记住这一份，卡片关掉之后顶栏的点进要能重新打开 */
+          pendingInfo = {
             latest: latest,
             current: info.current,
             date: String(rel.published_at || "").slice(0, 10),
@@ -508,7 +604,8 @@
             pageUrl: rel.html_url || "",
             asset: asset,
             autoUpdate: info.autoUpdate !== false,
-          });
+          };
+          show(pendingInfo);
           return latest;
         });
       })
@@ -528,6 +625,18 @@
 
   /* 控制台手动触发，方便调试：__fdCheckUpdate(true) */
   window.__fdCheckUpdate = check;
+
+  /*
+   * 版本号要立刻显示，不能等 8 秒后的那次检查 ——
+   * 用户打开面板第一眼就该看见自己在跑哪个版本。
+   * 这里只取本地版本，不碰 GitHub。
+   */
+  fetch("/api/update/info")
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d && d.ok) setVersion(d.current);
+    })
+    .catch(function () { /* 拿不到就空着，不影响别的功能 */ });
 
   setTimeout(function () { check(false); }, FIRST_DELAY);
   setInterval(function () { check(false); }, CHECK_INTERVAL);

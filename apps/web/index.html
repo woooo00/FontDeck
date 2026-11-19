@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FontDeck · 字体库</title>
-<link rel="stylesheet" href="style.css?v=56">
+<link rel="stylesheet" href="style.css?v=58">
 </head>
 <body>
 
@@ -12,6 +12,8 @@
   <div class="brand">
     <span class="logo">F</span>
     <span class="name">FontDeck</span>
+    <span class="app-ver" id="appVer" hidden></span>
+    <button class="upd-pill" id="updPill" type="button" hidden>有更新</button>
     <span class="count" id="count">—</span>
   </div>
   <div class="search-row">
@@ -107,7 +109,7 @@
 </aside>
 
 <script src="app.js?v=50"></script>
-<script src="update.js?v=2"></script>
+<script src="update.js?v=4"></script>
 
 <div id="dropHint" class="drop-hint"><span>松开即可安装字体</span></div>
 <div id="toast" class="toast"></div>
