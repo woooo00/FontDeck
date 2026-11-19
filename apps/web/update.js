@@ -1,21 +1,23 @@
 /*
- * FontDeck 更新检查。
+ * FontDeck 更新检查与安装。
  *
- * 只做「发现新版本 → 提醒」，不擅自下载和替换任何文件。原因：
- * 面板壳在 %APPDATA%\Adobe\CEP\extensions 里，替换后必须重开 Illustrator
- * 才生效，这种事必须由用户自己决定什么时候做（他手上可能正开着稿子）。
+ * 一种入口：弹卡片 → 点「立即更新」→ 面板自己下载、自己装 → 提示重开 Illustrator。
+ * 不再往浏览器扔链接，因为那等于把「下载 → 解压 → 放对位置 → 改指针」
+ * 整套活儿丢给用户，其中任何一步做错都会得到一个"更新了但没生效"的面板。
  *
- * 探测放在前端而不是服务端：CEP 的 Chromium 走系统代理，Node 不走。
- * 国内机器上「浏览器能开 GitHub、Node 直连超时」是常态，所以这一步
- * 留在浏览器侧成功率更高。服务端只提供版本号和仓库地址
- * （见 main.ts 的 /api/update/info）。
+ * 分工是刻意的：
+ *   下载在前端 —— CEP 的 Chromium 走系统代理，而本地 Node 不走。
+ *                 国内「浏览器能开 GitHub、Node 直连超时」是常态。
+ *   保存在服务端 —— 解压、校验、写指针都要碰文件系统，浏览器做不到。
+ * 两者之间是本机回环，几十 MB 秒级。
  */
 (function () {
   "use strict";
 
   var CHECK_INTERVAL = 6 * 60 * 60 * 1000;  /* 6 小时 */
   var FIRST_DELAY = 8000;                   /* 启动后 8 秒：等首屏扫描先跑完 */
-  var TIMEOUT = 8000;
+  var TIMEOUT = 8000;                       /* 只用于查版本，下载另算 */
+  var DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
   var K_CHECKED = "fontdeck.update.checkedAt";
   var K_SKIP = "fontdeck.update.skip";
 
@@ -57,7 +59,7 @@
     return null;
   }
 
-  /* ---------------------------------------------------------------- 弹窗 */
+  /* ---------------------------------------------------------------- 工具 */
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -77,6 +79,12 @@
       .trim();
   }
 
+  function mb(n) {
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  /* ---------------------------------------------------------------- 卡片 */
+
   function close() {
     if (!card) return;
     card.className = "upd-card";
@@ -89,8 +97,9 @@
 
   function show(info) {
     if (card) return;
+
     var notes = plainNotes(info.body);
-    if (notes.length > 320) notes = notes.slice(0, 320).trim() + "…";
+    if (notes.length > 260) notes = notes.slice(0, 260).trim() + "…";
 
     var el = document.createElement("div");
     el.className = "upd-card";
@@ -104,8 +113,14 @@
       (notes ? '<p class="upd-notes">' + esc(notes) + "</p>" : "") +
       '<div class="upd-actions">' +
       '<button class="btn upd-later" type="button">稍后</button>' +
-      '<button class="btn primary upd-go" type="button">去下载</button>' +
+      '<button class="btn primary upd-go" type="button">立即更新</button>' +
       "</div>" +
+      '<div class="upd-prog" hidden>' +
+      '<div class="upd-bar"><i></i></div>' +
+      '<div class="upd-pct">准备中…</div>' +
+      "</div>" +
+      '<div class="upd-done" hidden></div>' +
+      '<div class="upd-fallback" hidden></div>' +
       '<button class="upd-skip" type="button">跳过这个版本</button>';
 
     document.body.appendChild(el);
@@ -123,21 +138,257 @@
       close();
     });
     el.querySelector(".upd-go").addEventListener("click", function () {
-      openDownload(info);
+      startUpdate(info);
+    });
+  }
+
+  /** 拒绝进行中的操作把卡片关掉：装到一半被关，用户以为没事，其实什么都没装 */
+  function lockCard() {
+    if (!card) return;
+    var btn = card.querySelector(".upd-x");
+    if (btn) btn.disabled = true;
+    var later = card.querySelector(".upd-later");
+    if (later) later.disabled = true;
+    var skip = card.querySelector(".upd-skip");
+    if (skip) skip.hidden = true;
+  }
+
+  function setProgress(pct, text) {
+    if (!card) return;
+    var box = card.querySelector(".upd-prog");
+    if (box) box.hidden = false;
+    var bar = card.querySelector(".upd-bar i");
+    if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    var pctEl = card.querySelector(".upd-pct");
+    if (pctEl) pctEl.textContent = text;
+  }
+
+  function showDone(html) {
+    if (!card) return;
+    var actions = card.querySelector(".upd-actions");
+    if (actions) actions.hidden = true;
+    var prog = card.querySelector(".upd-prog");
+    if (prog) prog.hidden = true;
+    var box = card.querySelector(".upd-done");
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = html;
+  }
+
+  /* ---------------------------------------------------------------- 下载与安装 */
+
+  /** 优先取增量包（只有 app + panel，十几 MB），没有再退完整包 */
+  function pickAsset(release) {
+    var assets = Array.isArray(release.assets) ? release.assets : [];
+    var i;
+    for (i = 0; i < assets.length; i++) {
+      if (/-update\.zip$/i.test(String(assets[i].name || "")) && assets[i].browser_download_url) {
+        return { url: assets[i].browser_download_url, size: Number(assets[i].size || 0), name: assets[i].name };
+      }
+    }
+    for (i = 0; i < assets.length; i++) {
+      if (/\.zip$/i.test(String(assets[i].name || "")) && assets[i].browser_download_url) {
+        return { url: assets[i].browser_download_url, size: Number(assets[i].size || 0), name: assets[i].name };
+      }
+    }
+    return null;
+  }
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      return r.json().catch(function () {
+        return { ok: false, error: "服务端返回了无法解析的内容（HTTP " + r.status + "）" };
+      });
     });
   }
 
   /**
-   * 打开下载。
+   * 发起更新并轮询进度。
    *
-   * CEP 里 window.open 会被拦，必须走 CEP 的宿主接口。但面板 UI 在 iframe 里，
-   * 宿主接口只在顶层页绑得对，所以要把请求转给顶层。
-   *
-   * 关键：转过去之后**要等一个回执**。用户如果还没重开 Illustrator，
-   * 装着的还是旧桥接脚本，它会把这个消息当未知类型直接丢掉 ——
-   * 表现就是「点了没反应」，这是最糟的失败方式。收不到回执就降级成
-   * 把地址摆出来让用户复制。
+   * 下载交给本地服务做，不是在面板里 fetch —— GitHub 的资产域名不带 CORS，
+   * 浏览器里直接下会被拦。服务端下还有一个好处：几十 MB 落盘而不是在
+   * 渲染进程里堆一个大 ArrayBuffer。
    */
+  function startUpdate(info) {
+    if (!card) return;
+
+    if (info.autoUpdate === false) {
+      showFailed(
+        "当前是从源码目录运行的开发模式，自动更新会覆盖开发目录，所以被禁用了。",
+        info,
+        false
+      );
+      return;
+    }
+
+    if (!info.asset) {
+      showFailed("这个版本没有提供可下载的安装包。", info, false);
+      return;
+    }
+
+    lockCard();
+
+    var actions = card.querySelector(".upd-actions");
+    if (actions) actions.hidden = true;
+
+    setProgress(0, "正在准备…");
+
+    postJson("/api/update/install", { version: info.latest, url: info.asset.url })
+      .then(function (r) {
+        if (!r || !r.ok) throw new Error((r && r.error) || "无法开始更新");
+        return poll(info);
+      })
+      .catch(function (e) {
+        showFailed((e && e.message) || "更新失败", info, true);
+      });
+  }
+
+  function poll(info) {
+    if (!card) return Promise.resolve();
+
+    return fetch("/api/update/status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var s = (d && d.state) || {};
+
+        if (s.phase === "downloading") {
+          var pct = s.total ? Math.round((s.received / s.total) * 100) : 0;
+          var text = s.total
+            ? "正在下载 " + pct + "%  ·  " + mb(s.received) + " / " + mb(s.total)
+            : "正在下载 " + mb(s.received || 0);
+          /* 走了代理就把来源标出来，出问题时一眼能看出是不是代理没找对 */
+          if (s.via) text += "  ·  " + s.via;
+          setProgress(pct, text);
+          return sleep(600).then(function () { return poll(info); });
+        }
+
+        if (s.phase === "installing") {
+          setProgress(100, "下载完成，正在安装…");
+          return sleep(500).then(function () { return poll(info); });
+        }
+
+        if (s.phase === "done") {
+          showSuccess(s, info);
+          return Promise.resolve();
+        }
+
+        if (s.phase === "error") {
+          throw new Error(s.error || "更新失败");
+        }
+
+        /* idle（被别的请求抢了）或者还没开始 */
+        setProgress(0, "等待安装…");
+        return sleep(600).then(function () { return poll(info); });
+      })
+      .catch(function (e) {
+        /* 服务端在安装过程中会退出，轮询最后一次可能连不上 —— 
+           这种情况下状态大概率已经是 done，别把它报成失败 */
+        fetch("/api/update/status")
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d && d.state && d.state.phase === "done") {
+              showSuccess(d.state, info);
+            } else {
+              showFailed((e && e.message) || "更新失败", info, true);
+            }
+          })
+          .catch(function () {
+            showFailed((e && e.message) || "更新失败", info, true);
+          });
+      });
+  }
+
+  function showSuccess(s, info) {
+    if (!card) return;
+
+    var extra = s.panelUpdated === false
+      ? '<p class="upd-warn">面板外壳没能更新（' + esc(s.panelError || "文件被 Illustrator 占用") +
+        "）。功能已经生效，只是外壳还是旧的，下次装完整包会一起修好。</p>"
+      : "";
+
+    showDone(
+      '<div class="upd-ok-title">已装好 ' + esc(s.version || info.latest) + "</div>" +
+      '<p class="upd-ok-body">现在<strong>完全退出 Illustrator</strong>（不是只关面板窗口），' +
+      "再重新打开，新版本才会加载。</p>" +
+      extra +
+      '<button class="btn primary upd-restart-ok" type="button">知道了，我去重启</button>'
+    );
+
+    var ok = card.querySelector(".upd-restart-ok");
+    if (ok) {
+      ok.addEventListener("click", function () {
+        close();
+        /* 让老服务自己退出，否则端口一直被占着，重开 AI 也拉不起新版本 */
+        postJson("/api/update/restart", {}).catch(function () { /* 服务已经退了也算成功 */ });
+      });
+    }
+  }
+
+  function showFailed(msg, info, retryable) {
+    if (!card) return;
+
+    var actions = card.querySelector(".upd-actions");
+    if (actions) actions.hidden = true;
+
+    var prog = card.querySelector(".upd-prog");
+    if (prog) prog.hidden = true;
+
+    var box = card.querySelector(".upd-fallback");
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML =
+      '<div class="upd-err-title">更新没有完成</div>' +
+      '<p class="upd-err-body">' + esc(msg) + "</p>";
+
+    var row = document.createElement("div");
+    row.className = "upd-actions";
+
+    if (retryable) {
+      var again = document.createElement("button");
+      again.className = "btn primary";
+      again.type = "button";
+      again.textContent = "重试";
+      again.addEventListener("click", function () {
+        box.hidden = true;
+        box.innerHTML = "";
+        startUpdate(info);
+      });
+      row.appendChild(again);
+    }
+
+    if (info.pageUrl) {
+      var manual = document.createElement("button");
+      manual.className = "btn";
+      manual.type = "button";
+      manual.textContent = "手动下载";
+      manual.addEventListener("click", function () {
+        /* 只在自动更新失败时作为兜底出现，不是第二条常规路径 */
+        openUrl(info.pageUrl);
+      });
+      row.appendChild(manual);
+    }
+
+    box.appendChild(row);
+
+    var x = card.querySelector(".upd-x");
+    if (x) x.disabled = false;
+    var later = card.querySelector(".upd-later");
+    if (later) {
+      later.disabled = false;
+      later.hidden = false;
+    }
+  }
+
+  /* ---------------------------------------------------------------- 打开网页（仅兜底） */
+
   var urlAck = null;
   window.addEventListener("message", function (e) {
     var d = e.data;
@@ -146,13 +397,10 @@
     }
   });
 
-  function openDownload(info) {
-    var url = info.downloadUrl || info.pageUrl;
+  function openUrl(url) {
     if (!url) return;
-
     var handled = false;
 
-    /* 顶层页：桥就在本窗口，直接调 */
     if (window.parent === window) {
       try {
         if (window.__adobe_cep__ && typeof window.__adobe_cep__.openURLInDefaultBrowser === "function") {
@@ -165,57 +413,28 @@
           handled = !!window.open(url, "_blank");
         } catch (e2) { /* ignore */ }
       }
-      if (!handled) showLinkFallback(url);
+      if (!handled) window.prompt("浏览器没能自动打开，复制这个地址：", url);
       return;
     }
 
-    /* iframe：转给顶层执行，等回执 */
     var done = false;
-    var timer = null;
-
     urlAck = function () {
       done = true;
-      if (timer) clearTimeout(timer);
     };
-
     try {
       window.parent.postMessage({ tag: "__fontdeck_bridge__", type: "openUrl", url: url }, "*");
     } catch (e3) {
-      showLinkFallback(url);
+      window.prompt("复制这个地址手动下载：", url);
       return;
     }
-
-    timer = setTimeout(function () {
+    setTimeout(function () {
       if (done) return;
-      /* 回执没来：要么桥接是旧版，要么根本不在 CEP 里。
-         先试普通浏览器的新标签，再不行就把地址亮出来。 */
-      var opened = false;
       try {
-        opened = !!window.open(url, "_blank");
-      } catch (e4) { /* ignore */ }
-      if (!opened) showLinkFallback(url);
+        if (!window.open(url, "_blank")) window.prompt("复制这个地址手动下载：", url);
+      } catch (e4) {
+        window.prompt("复制这个地址手动下载：", url);
+      }
     }, 500);
-  }
-
-  function showLinkFallback(url) {
-    if (!card) {
-      /* 卡片已经关掉了：至少不能什么都不发生，用原生提示让用户知道去哪拿 */
-      try {
-        window.prompt("浏览器没能自动打开，复制这个地址手动下载：", url);
-      } catch (e) { /* ignore */ }
-      return;
-    }
-    var old = card.querySelector(".upd-fallback");
-    if (old) old.parentNode.removeChild(old);
-    var box = document.createElement("div");
-    box.className = "upd-fallback";
-    box.innerHTML =
-      '<p>浏览器没能自动打开，复制这个地址手动下载：</p>' +
-      '<input readonly value="' + esc(url) + '">';
-    card.appendChild(box);
-    var input = box.querySelector("input");
-    input.focus();
-    input.select();
   }
 
   /* ---------------------------------------------------------------- 检查 */
@@ -248,21 +467,6 @@
     });
   }
 
-  function pickDownload(release) {
-    var assets = Array.isArray(release.assets) ? release.assets : [];
-    /* 优先给安装包，其次给任意 zip，最后退回 release 页面 */
-    var order = [/setup.*\.exe$/i, /\.zip$/i, /\.exe$/i];
-    for (var i = 0; i < order.length; i++) {
-      for (var j = 0; j < assets.length; j++) {
-        var name = String(assets[j].name || "");
-        if (order[i].test(name) && assets[j].browser_download_url) {
-          return assets[j].browser_download_url;
-        }
-      }
-    }
-    return "";
-  }
-
   function check(force) {
     if (running) return Promise.resolve(null);
 
@@ -293,13 +497,17 @@
           if (cmpVer(latest, info.current) <= 0) return null;
           if (ls(K_SKIP) === latest) return null;
 
+          var asset = pickAsset(rel);
+          if (!asset) return null;  /* 没资产的 release 不提示，点了也没用 */
+
           show({
             latest: latest,
             current: info.current,
             date: String(rel.published_at || "").slice(0, 10),
             body: rel.body || "",
             pageUrl: rel.html_url || "",
-            downloadUrl: pickDownload(rel),
+            asset: asset,
+            autoUpdate: info.autoUpdate !== false,
           });
           return latest;
         });

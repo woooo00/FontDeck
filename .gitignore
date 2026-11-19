@@ -13,6 +13,9 @@ data/
 # 打包产物：几百 MB，只存在于本机和 Release asset 里
 build/
 
+# 隔离安装测试目录（模拟"别人的机器"）
+_iso*/
+
 # Python 编译缓存
 __pycache__/
 *.pyc

@@ -31,9 +31,11 @@ import {
   userFontsDir,
 } from "../../../packages/win-font/src/installer.js";
 import type { FontFace, FontIndex } from "../../../packages/font-core/src/types.js";
+import { getUpdateState, isBusy, isInstalledCopy, startUpdate } from "./updater.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../../..");
+
 
 /** 把用户报的问题 + 当前识别上下文压成一段可直接复制的诊断文本 */
 function buildReportText(id: string, body: any): string {
@@ -1032,6 +1034,68 @@ async function handlePost(
 ) {
   try {
     /*
+     * 自动更新：发起一次「下载 + 安装」后台任务。
+     *
+     * 为什么下载放在服务端而不是面板里：GitHub 的 Release 资产域名不带
+     * CORS 头，Chromium 里 fetch 直接被拦（实测）。版本检查能过只是因为
+     * api.github.com 带 CORS，资产下载是另一个域名。
+     *
+     * 为什么只是一个"发起"：几十 MB 的安装包不适合挂在一个请求体里，
+     * 前端拿 jobId 轮询进度，中途断了也能看清是卡住还是在下。
+     */
+    if (url.pathname === "/api/update/install") {
+      if (!isInstalledCopy()) {
+        json(res, {
+          ok: false,
+          error: "当前是从源码目录运行的开发模式，自动更新已禁用（会覆盖你的开发目录）",
+        }, 400);
+        return;
+      }
+      if (isBusy()) {
+        json(res, { ok: false, error: "已经有一个更新在进行中" }, 409);
+        return;
+      }
+
+      const raw = await readBody(req, 1024 * 1024);
+      const body = JSON.parse(raw.toString("utf-8") || "{}");
+      const version = String(body.version ?? "").trim();
+      const downloadUrl = String(body.url ?? "").trim();
+
+      if (!/^\d+\.\d+\.\d+$/.test(version)) {
+        json(res, { ok: false, error: "版本号不合法" }, 400);
+        return;
+      }
+      if (!/^https:\/\//i.test(downloadUrl)) {
+        json(res, { ok: false, error: "下载地址必须是 https" }, 400);
+        return;
+      }
+
+      const st = startUpdate(version, downloadUrl);
+      json(res, { ok: true, state: st });
+      return;
+    }
+
+    /*
+     * 装完之后由前端调用，让老进程自己退出。
+     *
+     * 不自动退：装完还要让前端把"请重开 Illustrator"显示出来，
+     * 一退出面板就成了一张断了线的空壳。
+     * 但也不能不退 —— 端口一直被老进程占着，launcher 探活会认为
+     * "已经在跑"，新版本永远不会被拉起来，用户重开也还是旧界面。
+     */
+    if (url.pathname === "/api/update/restart") {
+      json(res, { ok: true });
+      setTimeout(() => {
+        try {
+          process.exit(0);
+        } catch {
+          /* ignore */
+        }
+      }, 600);
+      return;
+    }
+
+    /*
      * 转曲恢复：识别
      *
      * 入参就是 AI 侧 fdRecoverScan 的返回（导出的图路径 + 每个轮廓的像素框）。
@@ -1910,7 +1974,18 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       check: cfg.check !== false,
       /* 面板壳的版本：壳不跟着服务端更新，单独报出来便于排查「更新了但界面没变」 */
       panelVersion: String(cfg.panelVersion || ""),
+      /*
+       * 从源码目录跑的时候不能自动更新（会覆盖开发目录），
+       * 前端据此决定按钮是「立即更新」还是「手动下载」。
+       */
+      autoUpdate: isInstalledCopy(),
     });
+    return;
+  }
+
+  /* 更新任务进度：前端轮询这个 */
+  if (url.pathname === "/api/update/status") {
+    json(res, { ok: true, state: getUpdateState() });
     return;
   }
 

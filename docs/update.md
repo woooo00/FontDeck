@@ -2,17 +2,51 @@
 
 ## 现在的状态
 
-已完成：**更新检测 + 面板内提醒 + 可下载的发行包**（不自动替换文件）。
+已完成：**检测 → 提醒 → 自动下载 → 自动安装 → 提示重开**。用户只需要点一次。
 
 - 面板启动 8 秒后查一次，之后每 6 小时一次
 - 发现新版本 → 底部滑入卡片，显示版本号 / 日期 / 更新说明
-- 三个出口：`稍后`（本次不再烦，下次启动还会问）、`跳过这个版本`（永久不再提示这个版本）、`去下载`（开浏览器到 Release 页）
+- 点「立即更新」→ 服务端下载增量包（约 17MB）→ 校验解压 → 写版本指针 → 提示重开 Illustrator
+- 另有 `稍后`、`跳过这个版本` 两个出口
 - 网络不通时**完全静默**，只在控制台留一行日志 —— 用户没点任何按钮，不该被打扰
 
-Release 里放的是真能装的包（自带 Node 和 Python 运行时），
-详见下面「打包产物长什么样」。
-
 控制台手动触发：`__fdCheckUpdate(true)`
+
+## 为什么下载在服务端做
+
+一开始想的是面板里直接 `fetch` GitHub 的安装包，下完 POST 给本地服务。实测走不通：
+
+- `api.github.com` 带 CORS 头，所以**版本检查**能过
+- Release 资产在 `release-assets.githubusercontent.com`，**不带** `Access-Control-Allow-Origin`，
+  Chromium 里 `fetch` 直接 `Failed to fetch`
+
+所以下载改到服务端。代价是 Node 不读系统代理，得自己找：
+
+1. 环境变量 `HTTPS_PROXY` / `HTTP_PROXY`
+2. Windows「Internet 选项」的代理（读注册表，用 koffi 调 advapi32；`reg.exe` 在部分环境被封）
+3. 都没有就直连
+
+实际走的哪条路会显示在进度行里，排障时一眼能看出来。
+
+下载是 HTTPS 经代理走 `CONNECT` 隧道（`tls.connect({ socket })` + 自定义 Agent），
+不是明文转发 —— GitHub 不走明文。
+
+## 安装怎么落地
+
+```
+POST /api/update/install {version, url}   → 启动后台任务，立刻返回
+GET  /api/update/status                   → 前端轮询：downloading / installing / done / error
+POST /api/update/restart                  → 前端显示完提示后调用，老进程退出
+```
+
+`restart` 这一步不能省：老进程不退，端口 47615 一直被占，
+launcher 探活会认为「已经在跑」，**新版本永远不会被拉起来** ——
+用户重开 Illustrator 看到还是旧界面，而且没有任何报错。
+
+装的时候先解压到 `<target>.tmp`，结构自检通过才 rename，最后才写 `current`。
+中间任何一步失败，`current` 都不动，用户重开还是旧版本 —— 半途而废的更新比不更新糟糕。
+
+`current.previous` 保留上一版的路径，回滚就是把它写回 `current`。
 
 ## 怎么启用
 
@@ -47,13 +81,19 @@ Release 里放的是真能装的包（自带 Node 和 Python 运行时），
    ```
 
    产物在 `build/dist/FontDeck-<ver>.zip`，约 150 MB（解压后 390 MB）
-4. 发 Release：
+4. 发 Release（**两个包都要传**）：
 
    ```bash
-   gh release create v1.1.0 --title "1.1.0 · 说明" \
+   gh release create v1.1.1 --title "1.1.1 · 说明" \
        --notes-file build/release-notes.md \
-       build/dist/FontDeck-1.1.0.zip
+       build/dist/FontDeck-1.1.1.zip \
+       build/dist/FontDeck-1.1.1-update.zip
    ```
+
+   - `FontDeck-X.zip`（150MB）首次安装用，带运行时
+   - `FontDeck-X-update.zip`（17MB）面板自动更新下的就是它，只有 app + panel
+
+   少传 update 包，自动更新会退回下载完整包 —— 能装，但每次更新白下 130MB。
 
    `gh` 在 `C:\Users\6\.workbuddy\binaries\gh\bin\gh.exe`，
    并且**它要求 PATH 里有 git**，否则报 `unable to find git executable`：
@@ -126,14 +166,15 @@ FontDeck-1.1.0/
 
 ## 还没做
 
-**面板里点"去下载"只打开 Release 页面**，不会自动下载替换。要变成一键更新，
-需要补一段：下载 zip → 校验 → 解压到 `app\<ver>` → 改 `current` → 重启服务。
-指针机制已经就位，剩下的是下载与校验本身，以及失败时把 `current` 写回去。
+自动更新已经能用，但还有几个缺口：
 
-另外两个已知缺口：
-
-- 目前只发 zip + `install.cmd`，没有真正的安装器（无开始菜单项、无卸载入口）
-- `install.cmd` 不做完整性校验，包损坏时只能靠 xcopy 的 errorlevel 看出来
+- **没有 SHA256 校验**：判断包是否完整靠的是 `content-length` + 解压时的长度自检，
+  没有对照发布时生成的哈希。包被中间人替换理论上能过（实际要劫持 GitHub 的 HTTPS）。
+- **没有真正的安装器**：只有 zip + `install.cmd`，没有开始菜单项、没有卸载入口。
+- **runtime 不会自动更新**：增量包只含 app + panel。以后 Node 或 Python 依赖变了，
+  必须发一次完整包让用户手动装。
+- **出错后没有自动回滚**：失败时 `current` 不动（等于保持旧版），但如果新版装上去
+  起不来，需要人工把 `current.previous` 写回 `current`。
 
 ## 一个已知的坑
 

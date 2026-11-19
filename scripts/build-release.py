@@ -288,6 +288,7 @@ def stage_scripts(stage, version):
     for name in ("install.cmd", "README.txt"):
         src = os.path.join(ROOT, "scripts", "release", name)
         raw = open(src, "rb").read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        raw = raw.replace(b"{VER}", version.encode("ascii"))
         with open(os.path.join(stage, name), "wb") as f:
             f.write(raw)
 
@@ -310,6 +311,36 @@ def make_zip(stage, version):
                 full = os.path.join(dp, f)
                 arc = os.path.relpath(full, base)
                 z.write(full, arc)
+    log("  %s  %.0f MB" % (out, os.path.getsize(out) / 1048576))
+    return out
+
+
+def make_update_zip(stage, version):
+    """增量包：只装 app + panel + VERSION，不带 runtime。
+
+    首次安装必须用完整包（机器上还没有 Node/Python）。但已经装着 1.1.x 的机器
+    更新时，runtime 一个字都没变，再下 350MB 纯属浪费流量和时间。
+    这个包大约 40MB，面板内自动更新下的就是它。
+    """
+    os.makedirs(DIST, exist_ok=True)
+    out = os.path.join(DIST, "FontDeck-%s-update.zip" % version)
+    if os.path.exists(out):
+        os.remove(out)
+
+    base = os.path.dirname(stage)
+    top = os.path.basename(stage)
+    keep_prefixes = ("app/", "panel/")
+    keep_files = ("VERSION",)
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for dp, _, fs in os.walk(stage):
+            for f in fs:
+                full = os.path.join(dp, f)
+                arc = os.path.relpath(full, base).replace("\\", "/")
+                inner = arc[len(top) + 1:] if arc.startswith(top + "/") else arc
+                if inner in keep_files or inner.startswith(keep_prefixes):
+                    z.write(full, arc)
+
     log("  %s  %.0f MB" % (out, os.path.getsize(out) / 1048576))
     return out
 
@@ -350,6 +381,7 @@ def main():
         return
     log("[5/5] 压缩")
     make_zip(stage, version)
+    make_update_zip(stage, version)
     log("完成")
 
 

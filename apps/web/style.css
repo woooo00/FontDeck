@@ -2297,3 +2297,75 @@ body[data-pane="recover"] .tabs {
   font-family: Consolas, monospace;
   font-size: 10px;
 }
+
+/* ---- 更新进度与结果 ---- */
+/* [hidden] 会被 display:flex 之类的规则覆盖，必须显式压回去 */
+.upd-card [hidden] { display: none !important; }
+
+.upd-prog { margin-top: 9px; }
+
+.upd-bar {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: rgba(22, 22, 44, 0.08);
+  overflow: hidden;
+}
+
+.upd-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, #5f56ee, var(--accent));
+  transition: width 0.18s linear;
+}
+
+/* 数字每帧都变，等比数字避免抖动 */
+.upd-pct {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.upd-done { margin-top: 9px; }
+
+.upd-ok-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1a7f4b;
+}
+
+.upd-ok-body {
+  margin: 5px 0 9px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.upd-warn {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #a86413;
+}
+
+.upd-err-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #b3352b;
+}
+
+.upd-err-body {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  word-break: break-word;
+}
+
+.btn:disabled,
+.upd-x:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
