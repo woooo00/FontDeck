@@ -2335,6 +2335,37 @@
       });
   }
 
+  /**
+   * POST 遇到网络层失败自动重试一次。
+   *
+   * 浏览器对 GET 会自动重连重发，**对 POST 不会** —— 连接恰好在发出或收回
+   * 的瞬间断掉（机器满载、服务被看门狗重新拉起、休眠唤醒之后最常见），
+   * fetch 就直接抛 TypeError: Failed to fetch，服务端日志里一行都没有。
+   * 字体比对要跑 10~30 秒，撞上这个窗口的概率不低，所以在客户端补一次。
+   *
+   * 只在网络层失败时重试：服务端明确回了 4xx/5xx 说明它已经处理过，
+   * 重发等于让它再算一遍。
+   */
+  function postRetry(url, body, triesLeft) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(function (e) {
+      if (triesLeft <= 0) {
+        var err = new Error("Failed to fetch");
+        err.network = true;
+        err.detail = (e && e.message) || String(e);
+        throw err;
+      }
+      return new Promise(function (r) {
+        setTimeout(r, 400);
+      }).then(function () {
+        return postRetry(url, body, triesLeft - 1);
+      });
+    });
+  }
+
   /** 猜原稿字体。慢（2 秒级），所以独立异步跑，不挡识别结果 */
   function doMatchFont(rec) {
     var host = document.getElementById("recFontBox");
@@ -2392,18 +2423,31 @@
       payload.chars = samples;
     }
 
+    var busyFrom = Date.now();
     host.innerHTML =
       '<div class="rec-font-label is-busy">正在比对本机字体…<span class="rec-dots"></span></div>';
 
-    fetch(API + "/api/recover/match", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
+    /*
+     * 比对要 10~30 秒（本机 783 个 face × 4 行）。这段时间界面只有几个点，
+     * 用户会以为卡死 —— 实测报告里就写着「卡住没反应」。把秒数显示出来，
+     * 等待就从「没反应」变成「在进行」。
+     */
+    var busyTimer = setInterval(function () {
+      var el = host.querySelector(".rec-font-label.is-busy");
+      if (!el) {
+        clearInterval(busyTimer);
+        return;
+      }
+      var s = Math.round((Date.now() - busyFrom) / 1000);
+      el.innerHTML = "正在比对本机字体… " + s + " 秒<span class=\"rec-dots\"></span>";
+    }, 1000);
+
+    postRetry(API + "/api/recover/match", payload, 1)
       .then(function (r) {
         return r.json();
       })
       .then(function (d) {
+        clearInterval(busyTimer);
         if (!d || !d.ok) throw new Error((d && d.error) || "字体匹配失败");
         /* 把这次比对实际用的句子也带进诊断日志：OCR 错字会污染排名，
            用户粘原文重跑后能一眼看出「推荐基于哪句话」。 */
@@ -2580,8 +2624,26 @@
         if (autoSegOk) renderSegments();
       })
       .catch(function (e) {
+        clearInterval(busyTimer);
+        /*
+         * 这里以前只打一行「字体比对失败：Failed to fetch」，用户看到的是
+         * 一句英文、也不知道能不能重来。实际这一类失败几乎都是连接层断了
+         * （机器忙、服务刚被看门狗拉起），重试一次就好，跟字体无关。
+         */
+        var raw = (e && e.message) || String(e);
+        reportCtx.ui.lastError = "字体比对：" + raw;
+        var text = e && e.network
+          ? "字体服务这次没连上（不是识别出错），点下面重试即可。"
+          : raw;
         host.innerHTML =
-          '<div class="rec-font-error">字体比对失败：' + esc(e.message) + "</div>";
+          '<div class="rec-font-error">' + esc(text) + "</div>" +
+          '<button class="rec-font-retry" type="button">重试比对</button>';
+        var retryBtn = host.querySelector(".rec-font-retry");
+        if (retryBtn) {
+          retryBtn.addEventListener("click", function () {
+            doMatchFont(rec);
+          });
+        }
       });
   }
 

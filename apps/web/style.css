@@ -1051,6 +1051,24 @@ body[data-pane="recover"] .tabs {
   color: #c0392b;
 }
 
+/* 比对失败后的重试入口：这类失败多半是连接抖了一下，重试比重新识别省事 */
+.rec-font-retry {
+  margin-top: 8px;
+  padding: 5px 14px;
+  border: 1px solid rgba(22, 22, 44, 0.14);
+  border-radius: var(--r-sm);
+  background: #fff;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rec-font-retry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 
 .brand {
   display: flex;  align-items: baseline;
