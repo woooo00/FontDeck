@@ -1122,6 +1122,23 @@ body[data-pane="recover"] .tabs {
   user-select: none;
 }
 
+.app-ver:hover {
+  color: var(--muted);
+}
+
+/* 更新检查失败：点一个小黄点，把「连不上」和「已是最新」区分开。
+   悬停有原因说明，点一下重试。 */
+.app-ver.is-stale::after {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: #d69a1e;
+  vertical-align: 2px;
+}
+
 /* 「有更新」：整条顶栏都是灰字，这里要跳出来。
    用主色实底而不是描边 —— 描边在浅色背景上还是会被当成普通标签。
    brand 是 baseline 对齐，胶囊得自己居中，否则底边会跟文字基线平齐。 */

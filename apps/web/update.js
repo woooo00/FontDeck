@@ -14,7 +14,17 @@
 (function () {
   "use strict";
 
-  var CHECK_INTERVAL = 6 * 60 * 60 * 1000;  /* 6 小时 */
+  var CHECK_INTERVAL = 60 * 60 * 1000;      /* 1 小时：面板一直开着时的后台复查 */
+  /*
+   * 两次检查之间的最短间隔。
+   *
+   * 这里原来是直接拿 CHECK_INTERVAL 当节流：结果是**发版后最多要等 6 小时**
+   * 才会提示，而且时间戳存在 localStorage 里，用户重开面板、重开 Illustrator
+   * 都不会重查 —— 实测就踩到了：12:05 装好查过一次（当时最新就是 1.1.2），
+   * 12:10 发了 1.1.3，那边一直没有任何反应，要等到 18:05。
+   * 现在改成「每次打开面板都查一次」，5 分钟内的重复打开不重复打接口。
+   */
+  var MIN_GAP = 5 * 60 * 1000;
   var FIRST_DELAY = 8000;                   /* 启动后 8 秒：等首屏扫描先跑完 */
   var TIMEOUT = 8000;                       /* 只用于查版本，下载另算 */
   var DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
@@ -141,8 +151,39 @@
     if (!verEl) verEl = document.getElementById("appVer");
     if (!verEl) return;
     verEl.textContent = "v" + v;
-    verEl.title = "当前运行版本 " + v;
+    /*
+     * 版本号兼作「检查更新」入口：点了立刻查一次（忽略节流）。
+     * 那台机器上「没有任何反应」时，用户至少有一个能主动试的地方。
+     */
+    if (!verEl.__fdBound) {
+      verEl.__fdBound = true;
+      verEl.style.cursor = "pointer";
+      verEl.addEventListener("click", function () {
+        check(true);
+      });
+    }
+    if (!verEl.title) verEl.title = "当前运行版本 " + v + "（点这里检查更新）";
     verEl.hidden = false;
+  }
+
+  /**
+   * 把「更新检查的结果」表达出来。
+   *
+   * 检查失败以前完全静默（只在控制台留一行），于是「已经是最新版」和
+   * 「根本连不上 GitHub」在界面上长得一模一样 —— 用户只能来问「为什么没反应」。
+   * 现在失败会在版本号后面点一个小黄点，悬停能看原因，点一下重试。
+   */
+  function setCheckState(failed, msg) {
+    if (!verEl) verEl = document.getElementById("appVer");
+    if (!verEl) return;
+    if (failed) {
+      verEl.classList.add("is-stale");
+      verEl.title = "更新检查失败：" + msg + "（点这里重试）";
+    } else {
+      verEl.classList.remove("is-stale");
+      var v = String(verEl.textContent || "").replace(/^v/, "");
+      verEl.title = "当前运行版本 " + v + "（点这里检查更新）";
+    }
   }
 
   /* ---------------------------------------------------------------- 卡片 */
@@ -562,7 +603,7 @@
 
     if (!force) {
       var last = Number(ls(K_CHECKED) || 0);
-      if (last && Date.now() - last < CHECK_INTERVAL) return Promise.resolve(null);
+      if (last && Date.now() - last < MIN_GAP) return Promise.resolve(null);
     }
 
     running = true;
@@ -586,6 +627,7 @@
           Accept: "application/vnd.github+json",
         }).then(function (rel) {
           ls(K_CHECKED, Date.now());
+          setCheckState(false);
           if (!rel || !rel.tag_name) return null;
 
           var latest = String(rel.tag_name).replace(/^v/i, "");
@@ -610,10 +652,13 @@
         });
       })
       .catch(function (e) {
-        /* 网络不通是最常见的失败，绝不能因此弹错误窗 ——
-           用户根本没点任何按钮，不该被打扰。只在控制台留痕。 */
+        /* 网络不通是最常见的失败，绝不能因此弹窗打扰 ——
+           用户根本没点任何按钮。但也不能完全无声：给版本号点一个小黄点，
+           让「连不上」和「已是最新」在界面上能区分开。 */
+        var msg = (e && e.message) || String(e);
+        setCheckState(true, msg);
         try {
-          console.log("[update] 检查失败：", e && e.message ? e.message : e);
+          console.log("[update] 检查失败：", msg);
         } catch (e2) { /* ignore */ }
         return null;
       })
