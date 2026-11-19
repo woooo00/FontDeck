@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FontDeck · 字体库</title>
+<link rel="stylesheet" href="style.css?v=55">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">F</span>
+    <span class="name">FontDeck</span>
+    <span class="count" id="count">—</span>
+  </div>
+  <div class="search-row">
+    <input id="search" type="search" placeholder="搜索字体名、文件名、PostScript 名…" autocomplete="off" spellcheck="false">
+    <button id="btnInstall" class="install-btn" title="安装字体文件">＋</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab is-active" data-pane="library">字体库</button>
+  <button class="tab" data-pane="recover">恢复转曲</button>
+</nav>
+
+<!-- 字体库 -->
+<section id="pane-library" class="pane">
+  <nav class="filters" id="filters">
+    <div class="filter-group">
+      <button class="chip is-active" data-key="all">全部</button>
+      <button class="chip" data-key="lang" data-val="cjk">中文</button>
+      <button class="chip" data-key="lang" data-val="latin">西文</button>
+      <button class="chip" data-key="cat" data-val="serif">衬线</button>
+      <button class="chip" data-key="cat" data-val="sans-serif">无衬线</button>
+      <button class="chip" data-key="cat" data-val="monospace">等宽</button>
+      <button class="chip" data-key="cat" data-val="script">手写</button>
+    </div>
+  </nav>
+
+  <!-- 常用字体：前 4 个常显，其余收在托盘里 -->
+  <section id="fav" class="fav" hidden>
+    <div class="fav-head">
+      <span class="fav-title">常用</span>
+      <span id="favEmpty" class="fav-empty" hidden>用过的字体会自动收在这里</span>
+      <button id="favToggle" class="fav-toggle" hidden></button>
+    </div>
+    <!-- 右键卡片进入多选；工具条只在选择模式下出现 -->
+    <div id="favBar" class="fav-bar" hidden>
+      <span id="favBarCount" class="fav-bar-count"></span>
+      <button id="favBarDel" class="fav-btn danger" type="button" disabled>移除</button>
+      <button id="favBarCancel" class="fav-btn" type="button">取消</button>
+    </div>
+    <!-- 移除后 8 秒内可撤销 -->
+    <div id="favUndo" class="fav-bar fav-undo" hidden>
+      <span id="favUndoText" class="fav-bar-count"></span>
+      <button id="favUndoBtn" class="fav-btn" type="button">撤销</button>
+    </div>
+    <div id="favGrid" class="grid fav-grid"></div>
+  </section>
+
+  <main id="grid" class="grid"></main>
+  <div id="sentinel" class="sentinel"></div>
+  <div id="status" class="status"></div>
+</section>
+
+<!-- 恢复转曲 -->
+<section id="pane-recover" class="pane" hidden>
+  <div class="rec">
+    <div class="rec-intro">
+      <p>在 Illustrator 里选中<strong>已经转曲的文字</strong>，然后点下面的按钮。</p>
+      <p class="rec-hint">识别只在这台电脑上跑，图片不会上传。</p>
+    </div>
+
+    <button id="recScanBtn" class="btn primary wide">识别选中的转曲文字</button>
+    <div id="recProgress" class="rec-progress" hidden>
+      <div class="rec-progress-track"><div id="recProgressBar" class="rec-progress-bar"></div></div>
+      <div class="rec-progress-text">
+        <span id="recProgressText">准备中</span>
+        <span id="recProgressPct">0%</span>
+      </div>
+    </div>
+    <div id="recStatus" class="rec-status"></div>
+
+    <div id="recResult" class="rec-result"></div>
+
+    <!-- 排版整理自成一块：分隔线跟着区块走，不靠识别结果撑出来 -->
+    <div class="rec-sect">
+      <div class="rec-intro">
+        <p><strong>排版整理</strong>：直接操作选中的文本框，不涉及识别。</p>
+      </div>
+      <div class="rec-actions">
+        <button id="recMergeBtn" class="btn">合并选中文本</button>
+        <button id="recSplitBtn" class="btn">按行拆分</button>
+      </div>
+      <div id="recLayoutStatus" class="rec-status"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 详情抽屉 -->
+<div id="drawerMask" class="mask"></div>
+<aside id="drawer" class="drawer">
+  <button id="drawerClose" class="drawer-close" aria-label="关闭">×</button>
+  <div id="drawerBody"></div>
+</aside>
+
+<script src="app.js?v=50"></script>
+<script src="update.js?v=1"></script>
+
+<div id="dropHint" class="drop-hint"><span>松开即可安装字体</span></div>
+<div id="toast" class="toast"></div>
+
+</body>
+</html>

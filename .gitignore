@@ -1,0 +1,26 @@
+# 依赖：100MB，用 npm ci 装回来
+node_modules/
+
+# 运行期数据：字体索引是本机扫描产物，feedback 里是用户的稿件内容，
+# usage 是个人使用记录 —— 一律不进仓库
+data/
+
+# 日志与临时产物
+*.log
+*.zip
+*.tmp
+
+# Python 编译缓存
+__pycache__/
+*.pyc
+
+# 本机字体快照：采集于这台机器，没有代码价值，且带本机路径
+docs/hkcu-fonts.json
+docs/local-fonts.json
+docs/p0a-result.json
+docs/p0d-result.json
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,2299 @@
+/* FontDeck 字体库样式
+ * 浅色：浅底看字体比深底准，深底会让笔画显粗。
+ * 兼容 CEP 的 Chromium 99：不用 :has()、不用容器查询、不用 CSS 嵌套。
+ *
+ * 阶段 2（2026-11-18）：玻璃材质。三条贯穿全局的规则：
+ *   1) 透明度分四级 --glass-1..4，越靠前越透。文字密集的地方用后面的，
+ *      纯装饰容器用前面的，保证可读性不靠猜。
+ *   2) 「玻璃感」主要来自三件事，不是模糊本身：
+ *      上边 1px 高光（--lift-0 里的 inset）、半透明亮边、负 spread 的分层阴影。
+ *      模糊只在背后真有内容时才看得出来，所以列表卡片默认不开（见 .card）。
+ *   3) 边框一律用白色半透明（--glass-line*），灰色细线放在玻璃上会显脏。
+ */
+
+:root {
+  --bg: #f5f5f8;
+  /* 吸顶偏移：由 JS 按实测高度回写（见 syncStickyTops）。
+     这里给的是兜底值 —— 写死过的 92/131 与实测差了 4.5px 和 6.5px，
+     那几条缝在滚动时会让下面的卡片整条透出来。 */
+  --topbar-h: 88px;
+  --tabs-h: 37px;
+  /* 板块之间的间隙：用来区分顶栏 / 页签 / 筛选条，必须留着。
+     但间隙里要垫实底，不然滚动时卡片会从缝里透出来。 */
+  --sticky-gap: 8px;
+  /* 吸顶偏移只在两处定义，别的地方一律引用 —— 之前 .filters 的 top 在主规则
+     和窄屏媒体查询里各写了一遍，改一处另一处不跟着变，就多出一条缝。 */
+  --sticky-tabs-top: calc(var(--topbar-h, 88px) + var(--sticky-gap, 8px));
+  --sticky-filters-top: calc(
+    var(--sticky-tabs-top) + var(--tabs-h, 37px) + var(--sticky-gap, 8px)
+  );
+  --line: rgba(22, 22, 44, 0.075);
+  --ink: #16161a;
+  --ink-2: #5c5c66;
+  --muted: #8b8b96;
+  --faint: #b0b0b8;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --warn: #b25d00;
+  --warn-soft: rgba(178, 93, 0, 0.1);
+
+  /* ---- 圆角 ----
+     只有四档 + 胶囊。原先散落着 2/3/4/5/6/7/8/9/10px 九种值，
+     差 1px 肉眼分辨不出，却会在「外框 8px 里套一个 7px 的块」时
+     露出对不齐的缝，整体看着就是「没设计过」。
+     嵌套时一律递减：卡片 12 → 里面的大控件 9 → 更小的 6。
+     内外同值会让内层显得「外紧内松」。 */
+  --r-xs: 4px;      /* 14px 的小方块，再大就成圆了 */
+  --r-sm: 6px;      /* badge、logo、字形缩略图、小按钮 */
+  --r-md: 9px;      /* 输入框、按钮、提示块、列表项 —— 界面里 90% 都在这档 */
+  --r-lg: 12px;     /* 字体卡片、抽屉里的预览大块 */
+  --r-pill: 999px;  /* 胶囊：chip、toggle、进度条、细长条 */
+
+  /* ---- 玻璃材质 ---- */
+  /* 四级白：1 最透（大面积容器）、4 接近实底（输入框、看字形的地方） */
+  --glass-1: rgba(255, 255, 255, 0.3);
+  --glass-2: rgba(255, 255, 255, 0.4);
+  --glass-3: rgba(255, 255, 255, 0.58);
+  --glass-4: rgba(255, 255, 255, 0.93);
+  /* 亮边：1 是主边框，2 是分隔线/内圈 */
+  --glass-line: rgba(255, 255, 255, 0.82);
+  --glass-line-2: rgba(255, 255, 255, 0.5);
+  /* 斜向高光：模拟玻璃厚薄不均。
+     白色不能太重 —— 第一版给到 0.58，直接把底下的光斑全盖住了，
+     卡片看起来就是一块实心白板，透光感一点没剩。 */
+  --sheen: linear-gradient(
+    148deg,
+    rgba(255, 255, 255, 0.24) 0%,
+    rgba(255, 255, 255, 0.03) 46%,
+    rgba(255, 255, 255, 0.16) 100%
+  );
+  /* 内高光：上沿一条亮线 + 下沿一点反光，是「厚度」的来源 */
+  --inset-hi: inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.22);
+  /* 三级悬浮阴影：用负 spread，阴影只往外扩，不会在卡片内部发灰。
+     第一级刻意做得比「刚刚好」更重一点 —— 卡片之间只隔 10px，
+     阴影不够重就完全看不出来，悬浮感等于没有。 */
+  --lift-1: 0 1px 2px rgba(22, 22, 44, 0.06), 0 10px 22px -10px rgba(22, 22, 44, 0.3);
+  --lift-2: 0 2px 5px rgba(22, 22, 44, 0.07), 0 18px 36px -14px rgba(22, 22, 44, 0.38);
+  --lift-3: 0 6px 14px rgba(22, 22, 44, 0.1), 0 32px 60px -24px rgba(22, 22, 44, 0.42);
+  /* 兼容 CEP 里没开 GPU 合成的情况：--blur-* 全部失效时，
+     靠透明度 + 高光仍然成立，不会退化成一片灰 */
+  --blur-s: blur(10px) saturate(160%);
+  --blur-m: blur(18px) saturate(170%);
+  --blur-l: blur(26px) saturate(180%);
+
+  /* 兼容旧引用：--panel 被 14 处当底色用，统一指向玻璃二级 */
+  --panel: rgba(255, 255, 255, 0.68);
+}
+
+* { box-sizing: border-box; }
+
+html {
+  /* 保底底色：光斑层失效或 backdrop-filter 不支持时不会变白 */
+  background: #f5f5f8;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  /* 抽屉默认藏在右边界外（translateX(100%)），会把文档宽度撑大，
+     导致顶栏右侧的按钮被推出视口。这里必须裁掉横向溢出。
+
+     ⚠ 必须是 clip，不能是 hidden。
+     `overflow-x: hidden` 会让计算值把 overflow-y 变成 auto，于是 body
+     成了滚动容器、而真正的滚动发生在 html 上 —— position:sticky 就失去
+     了参考系。实测滚 500px 后 topbar 的 getBoundingClientRect().top = -500，
+     顶栏 / tab / 筛选条全部跟着滚走。
+     `clip` 只裁剪、不创建滚动容器，sticky 才能照常相对视口工作。
+     第一行是给老引擎的兜底（那种引擎上 sticky 本来就是坏的，不能更坏）。 */
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+/* 背景处理，两层：
+   1) 底层是极浅的斜向渐变（定色调）
+   2) 上面四条**边界略硬**的斜向色带
+
+   为什么非要色带：磨砂玻璃 = 背后有东西被糊掉。纯平滑渐变模糊之后还是
+   它自己，卡片里看不出任何「被磨过」的痕迹，眼睛只会判定成「白色半透明框」
+   ——这就是第一版失败的原因。色带边界清晰，被卡片 blur 掉后变成柔和过渡，
+   卡片里外一对比，磨砂才成立。
+   色带本身压得淡（0.22~0.32），并且只有卡片覆盖的地方才被糊，
+   卡片之间的缝里还能看到清晰边界，正好是磨砂玻璃盖在背景上的真实观感。 */
+body::before {
+  content: "";
+  position: fixed;
+  top: -10%;
+  left: -10%;
+  right: -10%;
+  bottom: -10%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      46% 36% at 6% -6%,
+      rgba(116, 98, 255, 0.5) 0%,
+      rgba(116, 98, 255, 0.2) 42%,
+      rgba(116, 98, 255, 0) 72%
+    ),
+    radial-gradient(
+      40% 32% at 104% 10%,
+      rgba(56, 172, 255, 0.44) 0%,
+      rgba(56, 172, 255, 0.17) 40%,
+      rgba(56, 172, 255, 0) 70%
+    ),
+    radial-gradient(
+      50% 40% at 94% 98%,
+      rgba(190, 100, 255, 0.3) 0%,
+      rgba(190, 100, 255, 0.11) 44%,
+      rgba(190, 100, 255, 0) 74%
+    ),
+    radial-gradient(
+      38% 30% at -8% 80%,
+      rgba(48, 204, 190, 0.28) 0%,
+      rgba(48, 204, 190, 0.1) 42%,
+      rgba(48, 204, 190, 0) 70%
+    ),
+    /* 基色仍比玻璃暗一档（#e3e7fd 左右）。上一版用的是斜向「硬边色带」，
+       边界 0.8% 就跳变，读起来像一道道条纹，太抢眼 —— 换回四团柔和的
+       径向光斑。但不能连明度差一起还回去：基色一旦回到 #eceeff 和卡片
+       同亮，玻璃就又变回「白框」。所以只换形态、保留暗度。 */
+    linear-gradient(162deg, #e3e7fd 0%, #ebe9ff 40%, #e4f1fb 72%, #e6f7f4 100%);
+}
+
+/* ---------------- 顶栏 ---------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* 吸顶块必须够实：0.72 时下面的卡片会整条透上来（不只是圆角缺口处），
+     滚动时字迹能认出来，非常干扰。0.9 + 12px 模糊，透出的只剩一团柔和
+     色温，玻璃感还在，但内容不会再「穿过」顶栏。 */
+  background: rgba(250, 250, 253, 0.9);
+  -webkit-backdrop-filter: var(--blur-m);
+  backdrop-filter: var(--blur-m);
+  /* 下边用亮边而不是灰线：玻璃和下方内容的分界靠「反光」，不靠描边 */
+  border-bottom: 1px solid var(--glass-line-2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 10px 26px -24px rgba(22, 22, 44, 0.55);
+  padding: 12px 18px 10px;
+  /* 底部两角收圆（用户指定）。顶边贴视口，不需要圆。 */
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  /* 与页签之间留出间隙 —— 用户要的是「板块之间有间隔」，
+     但不能让下面的卡片从这个间隔里透出来（见下方 ::after）。 */
+  margin-bottom: var(--sticky-gap);
+}
+
+/* 板块间隙的实底衬垫。
+   为什么必须垫：间隙本身是透明的，滚动时卡片会整条从里面穿过去。
+   为什么向上多盖一个圆角半径：border-radius 是裁剪，被裁掉的那个三角
+   同样会露出卡片。多盖 12px 正好填住它。
+   为什么 z-index 是 -1：垫层要待在自身背景之下，圆角才是圆的；
+   如果压在背景之上，角就被切成直角了。 */
+.topbar::after,
+.tabs::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - var(--r-lg));
+  /* +1px：百分比的 100% 是 padding box，不含底部的 1px 边框，
+     不补的话垫层正好差一条，滚动时会在缝的末端露一行字。 */
+  height: calc(var(--r-lg) + var(--sticky-gap) + 1px);
+  background: var(--bg);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* 筛选条下方没有间隙（紧接常用区/列表），所以只填它自己的圆角缺口，
+   不往下延伸 —— 否则会盖住下面内容的顶部 12px。 */
+.filters::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% - var(--r-lg));
+  height: calc(var(--r-lg) + 1px);
+  background: var(--bg);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* ---------- 顶部功能区切换 ---------- */
+
+.tabs {
+  position: sticky;
+  /* 紧贴顶栏下沿，中间留 --sticky-gap 的间隔（间隔被 .topbar::after 垫实） */
+  top: var(--sticky-tabs-top);
+  z-index: 19;
+  display: flex;
+  gap: 2px;
+  padding: 0 18px;
+  /* 同 topbar：吸顶期间必须够实，否则卡片整条透上来 */
+  background: rgba(250, 250, 253, 0.88);
+  -webkit-backdrop-filter: var(--blur-m);
+  backdrop-filter: var(--blur-m);
+  border-bottom: 1px solid var(--glass-line-2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  /* 与下方（恢复页是正文、字体库页是筛选条）同样留出间隙 */
+  margin-bottom: var(--sticky-gap);
+}
+
+/* 恢复页下面没有筛选条，tabs 就是这一块的收口，给它下圆角（用户指定）。
+   字体库页不加：那时它紧贴 filters，两个圆角叠着会形成平行弧线，
+   而且在两角露出下面的列表卡片。 */
+body[data-pane="recover"] .tabs {
+  border-bottom-left-radius: var(--r-lg);
+  border-bottom-right-radius: var(--r-lg);
+}
+
+.tab {
+  border: 0;
+  background: none;
+  padding: 9px 12px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.14s ease;
+}
+
+.tab:hover {
+  color: var(--ink-2);
+}
+
+.tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.pane[hidden] {
+  display: none;
+}
+
+/* ---------- 恢复转曲 ---------- */
+
+/* 恢复页纵向节奏。
+   原来这里的间距全靠 <p> 默认的 1em 上下边距 + 几个空容器撑着，
+   把空容器收掉之后节奏就散了（用户反馈「间隔乱来」）。
+   现在每一段都用显式数值，按 4/8 的倍数走：
+
+     顶部留白 20 → 说明两行(段间 4) → 主按钮 16
+     → 状态/结果 12~16 → 分区块 26 + 线 + 20 → 段落 → 按钮 12 → 状态 10          */
+.rec {
+  padding: 20px 18px 28px;
+  max-width: 640px;
+}
+
+.rec-intro {
+  margin: 0 0 16px;
+}
+
+.rec-intro p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+/* 说明的第二行（"识别只在这台电脑上跑"）比正文轻，只隔 4px */
+.rec-intro p + p {
+  margin-top: 4px;
+}
+
+.rec-intro .rec-hint {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* 「排版整理」自成一块：分隔线跟着区块走，不管上面有没有识别结果都在，
+   这样空态和有结果时的节奏完全一致，不会忽大忽小。 */
+.rec-sect {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.rec-intro p {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.rec-intro strong {
+  color: var(--ink);
+}
+
+.rec-intro .rec-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-bottom: 16px;
+}
+
+.btn.wide {
+  width: 100%;
+  padding: 10px 14px;
+}
+
+.rec-status {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  min-height: 18px;
+}
+
+/* 空态不占位。这两个容器没有内容时仍会撑出空白：
+   #recStatus 是 12+18，.rec-result 是 16 的外边距。
+   分隔线已经并进 .rec-sect，不再参与这段计算。 */
+#recStatus:empty {
+  margin-top: 0;
+  min-height: 0;
+}
+
+.rec-status.is-err {
+  color: #c0392b;
+}
+
+/* 排版整理的操作反馈做成色块。上一轮把说明文字都收起后，
+   光秃秃一行灰字太容易被当成「点了没反应」。 */
+#recLayoutStatus {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--inset-hi);
+  min-height: 16px;
+}
+
+#recLayoutStatus.is-ok {
+  color: #1c7a4d;
+  background: rgba(236, 247, 241, 0.78);
+  border-color: rgba(28, 122, 77, 0.2);
+}
+
+#recLayoutStatus.is-err {
+  color: #c0392b;
+  background: rgba(255, 240, 239, 0.8);
+  border-color: rgba(192, 57, 43, 0.2);
+}
+
+/* 没消息时不要画那个空胶囊：它有背景、边框、8px 内边距和 16px 最小高度，
+   空着就是一条悬在按钮下面的横杠（用户圈的那条）。 */
+#recLayoutStatus:empty {
+  display: none;
+}
+
+/* 识别进度：分阶段推进，条上再叠一层流动光带。
+   服务端渲染+识别可能要 10 秒以上，进度停在某一档时也得看得出「还在跑」。 */
+.rec-progress { margin-top: 12px; }
+.rec-progress[hidden] { display: none; }
+
+.rec-progress-track {
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: rgba(22, 22, 44, 0.09);
+  box-shadow: inset 0 1px 1px rgba(22, 22, 44, 0.06);
+  overflow: hidden;
+}
+
+.rec-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--accent), #8a7bff, var(--accent));
+  background-size: 200% 100%;
+  animation: rec-progress-flow 1.3s linear infinite;
+  transition: width 0.32s ease;
+}
+
+@keyframes rec-progress-flow {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+.rec-progress-text {
+  display: flex;
+  align-items: baseline;
+  /* 百分比紧跟阶段文字。用 space-between 推到最右，窄面板里容易被裁掉 */
+  gap: 7px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* 等待期的文案会带「已用时 Ns」，窄面板放不下时省略文字，
+   但百分比必须始终可见（它是「还在动」的主要信号）。 */
+#recProgressText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#recProgressPct {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-result {
+  margin-top: 16px;
+}
+
+/* 跟 #recStatus 同理：没识别结果时不该占那 16px */
+.rec-result:empty {
+  display: none;
+}
+
+.rec-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi), var(--lift-1);
+  margin-bottom: 14px;
+}
+
+.rec-summary b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* ---------- 字体推荐 ---------- */
+
+.rec-font {
+  margin-bottom: 14px;
+}
+
+.rec-font-label {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.rec-font-sel {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: var(--inset-hi);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rec-font-sel:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  box-shadow: var(--inset-hi), 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+/* 手动指定字体：推荐只是「最相似」，真身常不在前几名，必须留手动入口 */
+.rec-font-manual {
+  width: 100%;
+  margin-top: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  box-shadow: var(--inset-hi);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rec-font-manual:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  box-shadow: var(--inset-hi), 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.rec-font-hits:empty {
+  display: none;
+}
+
+.rec-font-hit {
+  padding: 4px 8px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+
+.rec-font-hit:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.rec-font-hit.is-empty,
+.rec-font-hit.is-picked {
+  color: var(--faint);
+  cursor: default;
+}
+
+.rec-font-hit.is-picked:hover {
+  background: none;
+}
+
+.rec-font-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--faint);
+}
+
+.rec-dots::after {
+  content: "";
+  animation: rec-dots 1.2s steps(4, end) infinite;
+}
+
+@keyframes rec-dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+.rec-chars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.rec-char {
+  position: relative;
+  width: 34px;
+  height: 40px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.8);
+  padding: 2px;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+}
+
+.rec-char input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: none;
+  text-align: center;
+  font-size: 17px;
+  font-family: inherit;
+  color: var(--ink);
+}
+
+/* 语义色只换透明度，不换色相：低置信度还是黄、缺字还是红，
+   否则用户要重新学一遍颜色含义 */
+.rec-char.is-low {
+  border-color: rgba(214, 168, 78, 0.55);
+  background: rgba(255, 248, 226, 0.78);
+}
+
+.rec-char.is-empty {
+  border-color: rgba(214, 120, 120, 0.55);
+  background: rgba(255, 240, 240, 0.78);
+}
+
+.rec-char .q {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  font-size: 8px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.rec-line {
+  margin-top: 12px;
+}
+
+.rec-line-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+
+.rec-line-label span {
+  font-weight: 400;
+  color: var(--faint);
+  margin-left: 6px;
+}
+
+.rec-line-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 9px 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: inherit;
+  color: var(--ink);
+  /* 正文输入框一律接近实底：正在敲字的地方对比度优先于透光 */
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  outline: none;
+  box-shadow: var(--inset-hi);
+}
+
+.rec-line-input:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  box-shadow: var(--inset-hi), 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.rec-line-hint {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--faint);
+}
+
+.rec-raw {
+  margin-top: 12px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.4);
+  box-shadow: var(--inset-hi);
+}
+
+.rec-raw summary {
+  cursor: pointer;
+  padding: 8px 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.rec-raw .rec-chars {
+  margin-top: 0;
+  padding-bottom: 10px;
+}
+
+.rec-feedback {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.rec-feedback-toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.rec-feedback-body {
+  margin-top: 10px;
+}
+
+.rec-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.rec-issues label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  cursor: pointer;
+  user-select: none;
+}
+
+.rec-issues input {
+  margin: 0;
+}
+
+.rec-feedback-body .rec-paste-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.rec-feedback-row {
+  margin-top: 8px;
+}
+
+.rec-feedback-row .btn {
+  width: 100%;
+}
+
+.rec-report-text {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--inset-hi);
+  resize: vertical;
+}
+
+.rec-paste {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.rec-paste-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  outline: none;
+  box-shadow: var(--inset-hi);
+}
+
+.rec-paste-input:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.rec-paste .btn {
+  flex: 0 0 auto;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.rec-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.rec-actions .btn {
+  flex: 1;
+}
+
+.rec-note {
+  margin-top: 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--muted);
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi);
+}
+
+/* ---------------- 恢复页精简 ----------------
+   用户勾掉的四块说明文字 + 逐字校对折叠不再显示。
+   这里用 display:none 而不是删 DOM：doRecoverApply / fillFromPastedText
+   仍会读 .rec-char input，删了会连带弄坏逐字兜底通道。
+   两个例外保留：字体比对进行中的提示（过程反馈）、粘贴回填提示。 */
+.rec-line-hint,
+.rec-font-label:not(.is-busy),
+.rec-font-hint,
+.rec-raw,
+.rec-note:not(#recPasteHint) { display: none !important; }
+
+.rec-font-label.is-busy {
+  font-size: 11px;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+
+/* 识别置信度偏低的警示：这是「字体不对」最常见的根因，
+   必须显眼，不能被上面的精简规则隐藏。 */
+.rec-lowconf {
+  margin: 0 0 9px;
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: #8a5a10;
+  /* 警示块用「有色的玻璃」而不是实色卡片：色相不动（黄=低置信），
+     只把底变透并压上同色投影，让它像贴在界面上的一层而不是补丁 */
+  background: rgba(255, 248, 232, 0.74);
+  border: 1px solid rgba(240, 217, 164, 0.85);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi), 0 8px 20px -16px rgba(138, 90, 16, 0.6);
+}
+
+.rec-line-label span.is-low {
+  color: #c47f17;
+  font-weight: 600;
+}
+
+/* 整块旋转 180°：识别彻底失败，比普通「置信度偏低」更醒目 */
+.rec-flipped {
+  margin: 0 0 12px;
+  padding: 11px 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #8a3c10;
+  background: rgba(255, 242, 232, 0.76);
+  border: 1px solid rgba(243, 198, 165, 0.9);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi), 0 10px 24px -18px rgba(138, 60, 16, 0.6);
+}
+.rec-flipped b {
+  display: block;
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+.rec-flipped-sub { color: #8a5a10; }
+.rec-flipped-text {
+  margin: 9px 0 7px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(240, 217, 196, 0.8);
+  border-radius: var(--r-md);
+}
+.rec-flipped-text span {
+  display: block;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.rec-flipped-text code {
+  display: block;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--ink);
+  word-break: break-word;
+}
+.rec-flip-btn {
+  padding: 5px 10px;
+  font-size: 11px;
+  color: #fff;
+  background: linear-gradient(180deg, #c06a08 0%, var(--warn) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    0 5px 14px -8px rgba(178, 93, 0, 0.6);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.rec-flip-btn:hover { opacity: .92; transform: translateY(-1px); }
+
+/* ---------------- 行内分段（一行多套样式） ---------------- */
+.rec-splitbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.rec-split-tip {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.rec-split-btn {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  transition: border-color 0.14s ease, background-color 0.14s ease,
+    color 0.14s ease, transform 0.14s ease;
+}
+.rec-split-btn:hover {
+  border-color: rgba(255, 255, 255, 0.98);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.rec-split-btn:disabled { opacity: .55; cursor: default; transform: none; }
+.rec-seg-loading,
+.rec-seg-error {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.rec-seg-error { color: #b4371a; }
+.rec-seg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 9px 0 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.rec-seg-reset {
+  padding: 2px 7px;
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+.rec-seg-reset:hover {
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--ink-2);
+}
+.rec-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 6px 7px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi);
+}
+.rec-seg-meta {
+  flex: 0 0 100%;
+  font-size: 10px;
+  color: var(--muted);
+}
+.rec-seg-text {
+  flex: 1 1 150px;
+  min-width: 0;
+  padding: 4px 7px;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+}
+.rec-seg-font {
+  flex: 1 1 130px;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+}
+.rec-seg-text:focus,
+.rec-seg-font:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  outline: none;
+}
+.rec-flipped-note {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: #9a6a3a;
+}
+
+/* 最高相似度都不到 0.6 时，相对百分比的「100%」会骗人 */
+.rec-font-unreliable {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #8a3c10;
+  background: rgba(255, 242, 232, 0.76);
+  border: 1px solid rgba(243, 198, 165, 0.9);
+  border-radius: var(--r-md);
+  box-shadow: var(--inset-hi);
+}
+
+.rec-paste.is-alert .rec-paste-input {
+  border-color: rgba(224, 178, 94, 0.85);
+  background: rgba(255, 253, 247, 0.94);
+}
+
+.rec-font-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #c0392b;
+}
+
+
+.brand {
+  display: flex;  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  /* 和全站玻璃呼应：实色块也给一道上沿高光 + 同色投影 */
+  background: linear-gradient(160deg, #6b61f2 0%, var(--accent) 100%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  align-self: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 4px 10px -6px rgba(79, 70, 229, 0.75);
+}
+
+.name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+}
+
+.search-wrap { position: relative; }
+
+.search-row {
+  display: flex;
+  gap: 7px;
+  align-items: stretch;
+}
+
+#search {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  /* 输入框比容器更实：正在打字的地方最需要稳定对比度 */
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.05);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.install-btn {
+  flex: none;
+  width: 36px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink-2);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: var(--inset-hi), var(--lift-1);
+  transition: border-color 0.14s ease, background-color 0.14s ease,
+    color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.install-btn:hover {
+  border-color: rgba(255, 255, 255, 0.98);
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.92);
+  transform: translateY(-1px);
+  box-shadow: var(--inset-hi), var(--lift-2);
+}
+
+/* 拖拽安装 */
+.drop-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(79, 70, 229, 0.08);
+  border: 2px dashed var(--accent);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.drop-hint.is-on { display: flex; }
+
+.drop-hint span {
+  /* 浮在整屏虚线上的一枚玻璃胶囊，靠亮边把它从背景里拔出来 */
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 22px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--glass-line);
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--inset-hi), 0 18px 40px -18px rgba(79, 70, 229, 0.5);
+}
+
+/* 安装结果提示：深色玻璃（唯一一块暗色玻璃，用来和浅色界面拉开） */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%) translateY(10px);
+  background: rgba(26, 26, 38, 0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 18px 40px -18px rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  max-width: 86vw;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 70;
+  line-height: 1.6;
+}
+
+.toast.is-on {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast.err {
+  background: rgba(126, 36, 36, 0.86);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+#search:focus {
+  border-color: rgba(79, 70, 229, 0.55);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: var(--inset-hi), 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+#search::-webkit-search-cancel-button { cursor: pointer; }
+
+/* ---------------- 筛选 ---------------- */
+
+.filters {
+  position: sticky;
+  /* 顶栏 + 间隔 + 页签 + 间隔，见 :root 里的 --sticky-filters-top */
+  top: var(--sticky-filters-top);
+  z-index: 19;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 8px;
+  padding: 9px 18px;
+  /* 同 topbar：吸顶期间必须够实 */
+  background: rgba(250, 250, 253, 0.88);
+  -webkit-backdrop-filter: var(--blur-m);
+  backdrop-filter: var(--blur-m);
+  border-bottom: 1px solid var(--glass-line-2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  /* 只剩一组分类（筛选类已去掉），窄面板下这一组仍会自动换行：
+     380px 装不下 7 个胶囊，「手写」会落到第二排。 */
+  /* 底部两角收圆。字体库页里 tabs 紧贴这条、不单独加圆角 ——
+     挨个加会形成两道平行弧线，读起来像渲染瑕疵而不是分层。 */
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+
+/* 早先用「滚动时把圆角收成直角」来避免漏内容，现在改由 ::after 垫实
+   （见 .topbar::after），圆角可以一直保持圆的，不再随滚动闪动。 */
+
+.filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 0 0 100%;
+}
+
+.chip {
+  flex: none;
+  padding: 4px 11px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--inset-hi), var(--lift-1);
+  transition: background-color 0.14s ease, border-color 0.14s ease,
+    box-shadow 0.14s ease, transform 0.14s ease, color 0.14s ease;
+}
+
+/* 悬停时「浮起来 1px」比换颜色更能说明可点，且不会和选中态撞色 */
+.chip:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  transform: translateY(-1px);
+  box-shadow: var(--inset-hi), var(--lift-2);
+}
+
+.chip.is-active {
+  background: var(--accent);
+  border-color: rgba(255, 255, 255, 0.32);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 6px 16px -8px rgba(79, 70, 229, 0.55);
+}
+
+.chip.warn.is-active {
+  background: var(--warn);
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 6px 16px -8px rgba(178, 93, 0, 0.5);
+}
+
+/* ---------------- 网格 ---------------- */
+
+.grid {
+  /* 单行列表：一行一个字体，整行宽，不做网格。
+     gap 从 6 加到 10：悬浮阴影需要缝才能显形，贴在一起就糊成一片 */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 14px 8px;
+}
+
+/* ---------------- 常用字体 ---------------- */
+/* 前 3 个常显，其余用 .is-extra 收进托盘；点标题右侧按钮展开。
+   整块用比页面略深的底色 + 分隔带圈出来，和下面的完整字体库区分开，
+   否则常用和列表连成一片，用户分不清哪几行是「常用」。 */
+/* 常区块做成「一块凸起的玻璃托盘」：比卡片更透、模糊更重，
+   加上下两条亮边，和下面的字体列表形成层次，又不靠色块硬切。
+   只有这一块，真模糊的开销可以忽略。 */
+.fav {
+  padding: 0 14px 6px;
+  /* 带一点点冷紫（不是灰），和下面纯白的列表区域拉开距离；
+     上下各一条亮边 + 底部投影，读起来是一块「凸起的托盘」。
+     ⚠ 这里**不能**加 backdrop-filter / transform / filter / opacity<1：
+     任何一种都会让 .fav 自己成为堆叠上下文，里面 .card.is-big 的 z-index:18
+     就被关在区块内部，展开的常用卡会被下面的列表卡盖住（2026-11-18 实测）。
+     要模糊由卡片自己负责，这一层只负责底色和分界。 */
+  /* 底色压到 0.28：原来 0.5 等于在背景上又铺一层白，
+     常用区的卡片叠上去就比列表区的更白，看着还是「白底框」。
+     现在靠上下亮边 + 内阴影区分区块，不靠底色压白。 */
+  background: rgba(226, 230, 255, 0.28);
+  /* 顶边刻意不留亮线。原来这里是 border-top(0.9 白) + inset 顶部高光(0.85 白)
+     两条白线叠着，在筛选条下方横贯成一条很扎眼的白杠
+     （2026-11-18 用户指出）。和筛选条的层次靠底色差 + 底部亮边已经够。 */
+  border-bottom: 1px solid var(--glass-line-2);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.4),
+    0 14px 30px -26px rgba(22, 22, 44, 0.5);
+  /* 底部两角收圆，顶边保持直角（它接着筛选条，圆了会露出一道缝）。
+     半径 12 < 左右内边距 14，所以切不到里面卡片的边缘 —— 改半径时
+     要连带确认这个关系。
+     ⚠ 不加 overflow:hidden：那会把 .card.is-big 展开时的溢出裁掉。 */
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+}
+
+.fav-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 0;
+}
+
+.fav-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+}
+
+/* 一个小色块当「板块标记」，比整块加粗标题更轻 */
+.fav-title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+.fav-toggle {
+  margin-left: auto;
+  padding: 2px 9px;
+  font-size: 10.5px;
+  font-family: inherit;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  transition: color 0.14s ease, border-color 0.14s ease,
+    background-color 0.14s ease, transform 0.14s ease;
+}
+
+.fav-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.fav-empty {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.fav-grid {
+  padding: 8px 0 12px;
+  /* 卡片展开时 JS 会把 padding-bottom 加大，把托盘撑高去包住预览。
+     过渡必须和卡片的 height 动画（0.2s）对齐，否则容器先跳、卡片后长，
+     看着像两件事。 */
+  transition: padding-bottom 0.2s cubic-bezier(0.22, 0.7, 0.3, 1);
+}
+
+/* 空态只留一行提示，不留网格的上下留白 */
+.fav-grid:empty {
+  padding: 0 0 10px;
+}
+
+/* 托盘：连 slot 一起隐藏。这里必须是 block —— slot 是 grid item，
+   写成 flex 会让它变成 flex 容器，里面的绝对定位卡片定位基准就变了 */
+.fav-grid .is-extra {
+  display: none;
+}
+
+.fav-grid.is-open .is-extra {
+  display: block;
+}
+
+.badge.used {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---------------- 常用：多选移除 ---------------- */
+/* 右键任一卡片进入多选，工具条才出现；勾选标记画在右上角，
+   左上角留给「用 N 次」徽标，两者不打架。 */
+.fav-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+
+/* display:flex 会盖掉 UA 的 [hidden]{display:none}，必须显式写回 */
+.fav-bar[hidden] {
+  display: none;
+}
+
+.fav-bar-count {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-right: auto;
+}
+
+.fav-btn {
+  padding: 3px 10px;
+  font-size: 10.5px;
+  font-family: inherit;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  transition: color 0.14s ease, border-color 0.14s ease,
+    background-color 0.14s ease, transform 0.14s ease;
+}
+
+.fav-btn:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.fav-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+  border-color: var(--glass-line);
+  color: var(--ink-2);
+  transform: none;
+}
+
+.fav-btn.danger {
+  color: #b3261e;
+  border-color: rgba(179, 38, 30, 0.22);
+}
+
+.fav-btn.danger:hover {
+  background: rgba(253, 236, 235, 0.9);
+  border-color: rgba(179, 38, 30, 0.5);
+  color: #b3261e;
+}
+
+/* 撤销条：和选择工具条同一位置，移除后立刻顶上 */
+.fav-undo .fav-bar-count {
+  color: var(--ink-2);
+}
+
+/* 多选态：勾选框放左边，别压住右边那列字重/分类
+   （卡片本身就是定位元素，勾选框直接挂 ::after 即可） */
+.fav-grid.is-pick .card {
+  cursor: default;
+  padding-left: 34px;
+}
+
+.fav-grid.is-pick .card::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  margin-top: -7px;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  border-radius: var(--r-xs);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 2px rgba(22, 22, 44, 0.1);
+}
+
+.fav-grid.is-pick .card.is-on {
+  border-color: rgba(79, 70, 229, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.75), var(--inset-hi),
+    0 8px 20px -12px rgba(79, 70, 229, 0.45);
+  background-color: rgba(255, 255, 255, 0.82);
+}
+
+.fav-grid.is-pick .card.is-on::after {
+  content: "✓";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 2px 6px -2px rgba(79, 70, 229, 0.6);
+}
+
+/* ---------- 卡片：单行列表 + 悬停预览 ---------- */
+/* slot 固定 58px 占位，卡片绝对定位在里面只改自己的高度：
+   悬停长高时相邻行纹丝不动，所以展开/收起全程不重排、不闪。
+   高度由 JS 写成 px 再过渡（CSS 的 100% 与 px 之间不插值）。 */
+.slot {
+  position: relative;
+  height: 58px;
+}
+
+.card {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  padding: 7px 12px 8px;
+  /* 真模糊。第一版为了滚动性能只在悬停时开，结果卡片就是一排白底框 ——
+     磨砂玻璃的核心特征就是「背后被模糊」，砍掉它再怎么调透明度也不成立。
+     半径 12px：够糊掉光斑的过渡，又不会把背景糊成一整片纯色。 */
+  background-color: var(--glass-2);
+  background-image: var(--sheen);
+  /* saturate 不能给太高：200% 时透出来的是「彩色塑料」，160% 才像磨砂玻璃 */
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  cursor: pointer;
+  overflow: hidden;
+  box-shadow: var(--inset-hi), inset 0 -1px 0 rgba(120, 112, 180, 0.16),
+    var(--lift-1);
+  transition: height 0.2s cubic-bezier(0.22, 0.7, 0.3, 1),
+    top 0.2s cubic-bezier(0.22, 0.7, 0.3, 1), transform 0.16s ease,
+    border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+/* 悬停 = 微微离地 1px + 提亮 + 阴影加强。位移刻意做得很小：
+   卡片上下就是相邻行，浮太多会盖住下一行的字。 */
+.card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.98);
+  background-color: var(--glass-3);
+  box-shadow: var(--inset-hi), var(--lift-2);
+}
+
+/* 悬停展开：18 压住相邻行，但低于 tabs(19) / topbar(20)，
+   否则滚动时预览会浮在吸顶栏上面。
+   注意 z-index 只在**同一堆叠上下文**里比较 —— 所以 .fav 绝对不能有
+   backdrop-filter / transform / filter，否则会把这里的 18 关在区块内部，
+   展开的常用卡就会被下面的列表卡盖住（2026-11-18 踩过）。 */
+.card.is-big {
+  z-index: 18;
+  background-color: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(18px) saturate(190%);
+  backdrop-filter: blur(18px) saturate(190%);
+  border-color: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--inset-hi), 0 0 0 1px rgba(255, 255, 255, 0.45),
+    var(--lift-3);
+}
+
+/* 两层都要留、但必须错开一档。
+   常用区和主列表是两个独立容器，卡片 z-index 相同（都是 18）时，
+   浏览器退回按 DOM 顺序 —— 主列表在后面，就会把常用区展开的卡盖住
+   （用户 2026-11-18 报的正是这个）。所以常用区 18、主列表 17。 */
+#favGrid .card.is-big {
+  z-index: 18;
+}
+
+#grid .card.is-big {
+  z-index: 17;
+}
+
+/* 展开才露出来的放大字样 + 文件信息 */
+.card-more {
+  margin-top: 7px;
+  padding-top: 7px;
+  /* 玻璃上的分隔线要用白色（反光），灰色虚线在透光背景上像脏点 */
+  border-top: 1px dashed rgba(255, 255, 255, 0.65);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s linear, visibility 0s linear 0.1s;
+}
+
+.card.is-big .card-more {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.14s linear 0.09s, visibility 0s linear 0.09s;
+}
+
+.more-sample {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.more-sample img {
+  max-height: 34px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+}
+
+.more-info {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--faint);
+  font-family: Consolas, "Courier New", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 名称按内容宽度，长名字压缩而不是换行 */
+.card-main .card-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.card-meta {
+  /* 原来 flex:none，窄面板里「400 · 未分类 · 3 字重 · TTF」会把卡片右边缘顶穿，
+     被 overflow:hidden 硬切掉半个字。改成可压缩 + 省略号，右边始终收得干净。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 56%;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.card-sample {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.card-badges {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.badge {
+  font-size: 9.5px;
+  /* 胶囊形的左右内边距必须 ≥ 圆头半径，否则文字会压到弧线上。
+     这个徽标高 17.7px（9.5 × 1.65 + 1×2），半径 8.8 ——
+     所以给 8px；原来的 5px 是配合 4px 方角写的，改胶囊后必须一起改。 */
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.65;
+  /* 徽标也是一小片玻璃：半透明白 + 一圈亮边。
+     用实色的话压在玻璃卡上会像贴了张不干胶，层次全断。 */
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8),
+    0 1px 2px rgba(22, 22, 44, 0.04);
+}
+
+.badge.weight { background: rgba(255, 255, 255, 0.72); color: #5c5c66; }
+.badge.var { background: rgba(79, 70, 229, 0.12); color: var(--accent); }
+.badge.warn { background: rgba(178, 93, 0, 0.13); color: var(--warn); }
+.badge.sys { background: rgba(255, 255, 255, 0.5); color: #9a9aa4; }
+.badge.dup { background: rgba(124, 92, 214, 0.14); color: #7c5cd6; }
+
+.card-name {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.card-sample {
+  height: 15px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.card-name img,
+.card-sample img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* 单行列表里名称图别撑破行高 */
+.card-main .card-name img {
+  max-height: 22px;
+}
+
+.card-sample img {
+  max-height: 15px;
+}
+
+.name-fallback {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sample-fallback {
+  font-size: 11px;
+  color: var(--faint);
+  font-style: italic;
+}
+
+/* 同家族字重列表 */
+.sib-title {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 18px 0 8px;
+  letter-spacing: 0.03em;
+}
+
+.sib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.sib {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--ink-2);
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  transition: background-color 0.14s ease, border-color 0.14s ease,
+    transform 0.14s ease, box-shadow 0.14s ease, color 0.14s ease;
+}
+
+.sib:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.82);
+  transform: translateY(-1px);
+  box-shadow: var(--inset-hi), var(--lift-1);
+}
+
+.sib.is-active {
+  border-color: rgba(79, 70, 229, 0.55);
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.sib-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sib-w {
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 相似字体 ---------- */
+
+.sim {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.04);
+  transition: border-color 0.14s ease, background-color 0.14s ease,
+    transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.sim:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.84);
+  transform: translateY(-1px);
+  box-shadow: var(--inset-hi), var(--lift-1);
+}
+
+.sim-glyph {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 字形缩略图需要中性底，和 detail-preview 同理，做实一点 */
+  background: rgba(255, 255, 255, 0.82);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.85);
+}
+
+.sim-glyph img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.sim-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sim-name {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sim-bar {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: rgba(22, 22, 44, 0.08);
+  overflow: hidden;
+}
+
+.sim-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+.sim-score {
+  flex: none;
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 内容重复提示 ---------- */
+
+.dup-note {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(240, 226, 200, 0.9);
+  background: rgba(253, 249, 240, 0.78);
+  border-radius: var(--r-md);
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: #8a6d2f;
+  box-shadow: var(--inset-hi), 0 8px 20px -18px rgba(138, 109, 47, 0.5);
+}
+
+.dup-note b {
+  color: #6f5518;
+}
+
+.dup-note .dup-item {
+  display: block;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 10.5px;
+  color: #a08040;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dup-note .dup-item:hover {
+  color: #6f5518;
+  text-decoration: underline;
+}
+
+/* ---------------- 状态 ---------------- */
+
+.sentinel { height: 1px; }
+
+.status {
+  text-align: center;
+  padding: 18px 0 40px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.status .more {
+  display: inline-block;
+  padding: 7px 18px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  box-shadow: var(--inset-hi), var(--lift-1);
+  transition: border-color 0.14s ease, background-color 0.14s ease,
+    color 0.14s ease, transform 0.14s ease;
+}
+
+.status .more:hover {
+  border-color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 70px 20px;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+/* ---------------- 抽屉 ---------------- */
+
+.mask {
+  position: fixed;
+  inset: 0;
+  /* 刻意不给遮罩加 backdrop-filter：视口级模糊要重算整屏，
+     底下还压着几十上百张卡片，滑出抽屉那一下会明显掉帧。
+     靠更冷更深的色调压暗，视觉上一样能把注意力收到抽屉上。 */
+  background: rgba(22, 22, 44, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 40;
+}
+
+.mask.is-open { opacity: 1; pointer-events: auto; }
+
+/* 抽屉是全站白度最高的玻璃：里面全是等宽字体名和数值，
+   透光太强会让这些细字发虚。0.76 + 30px 模糊，既透又清楚。 */
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 92vw);
+  background: rgba(250, 250, 255, 0.76);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  border-left: 1px solid var(--glass-line);
+  box-shadow: -1px 0 0 rgba(255, 255, 255, 0.7),
+    -28px 0 64px -34px rgba(22, 22, 44, 0.42);
+  transform: translateX(100%);
+  transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 41;
+  overflow-y: auto;
+  padding: 22px 22px 40px;
+}
+
+.drawer.is-open { transform: translateX(0); }
+
+.drawer-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--ink-2);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--inset-hi), 0 1px 2px rgba(22, 22, 44, 0.05);
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.drawer-close:hover {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.98);
+}
+
+.detail-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 8px 48px 4px 0;
+  word-break: break-word;
+}
+
+.detail-sub {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: Consolas, monospace;
+  margin-bottom: 18px;
+  word-break: break-all;
+}
+
+.detail-preview {
+  /* 这块**故意**接近实底（0.93）：用户是靠这里判断字形细节的，
+     让彩色光斑透上来会给笔画边缘染色、看起来变粗，判断就失准了。
+     玻璃质感靠亮边 + 内高光保留，只把「透光」这一项拿掉。 */
+  background: var(--glass-4);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  padding: 14px;
+  margin-bottom: 16px;
+  text-align: center;
+  overflow: hidden;
+  box-shadow: var(--inset-hi), var(--lift-1);
+}
+
+.detail-preview img { max-width: 100%; height: auto; }
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(22, 22, 44, 0.06);
+  font-size: 12px;
+}
+
+.detail-row .k { color: var(--muted); flex: none; }
+.detail-row .v {
+  text-align: right;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-row .v.mono { font-family: Consolas, monospace; font-size: 11px; }
+
+.detail-actions {
+  /* 紧跟字重选择之后，不再滚到抽屉最底部 */
+  margin: 2px 0 20px;
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--glass-line);
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--inset-hi), var(--lift-1);
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.98);
+  transform: translateY(-1px);
+  box-shadow: var(--inset-hi), var(--lift-2);
+}
+
+/* 主按钮保持实色（要靠它区分层级），但加顶部高光和彩色投影，
+   让它看起来是「一块发光的玻璃」而不是一个填色矩形 */
+.btn.primary {
+  background: linear-gradient(180deg, #5f56ee 0%, var(--accent) 100%);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 6px 18px -8px rgba(79, 70, 229, 0.6);
+}
+
+.btn.primary:hover {
+  background: linear-gradient(180deg, #564df0 0%, #463cda 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    0 10px 26px -10px rgba(79, 70, 229, 0.7);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn.danger {
+  border-color: rgba(178, 59, 59, 0.24);
+  color: #b23b3b;
+  flex: 0 0 auto;
+}
+
+.btn.danger:hover {
+  background: rgba(253, 244, 244, 0.9);
+  border-color: rgba(178, 59, 59, 0.5);
+}
+
+/* ---------------- 窄屏（CEP 侧边栏 ~380px） ---------------- */
+
+@media (max-width: 720px) {
+  .topbar { padding: 10px 13px 9px; }
+  /* 这里只管内边距。顶栏高度变了由 JS 回写 --topbar-h，
+     吸顶偏移全在 :root 里算，不要再在这里覆盖 top。 */
+  .filters { padding: 8px 13px; }
+  /* 单行列表在窄屏也不换列，只收紧留白（gap 仍留 8px 给阴影） */
+  .grid {
+    gap: 8px;
+    padding: 12px 12px 8px;
+  }
+  .fav { padding: 0 12px 4px; }
+  .fav-grid {
+    padding: 8px 0 11px;
+  }
+  .drawer { width: 100%; }
+}
+
+/* 分区与排版整理 —— 分隔线已并入 .rec-sect（见上方恢复页节奏那一段），
+   .rec-sep 这个独立元素已删除，不要再加回来。 */
+
+/* ---------------------------------------------------------------- 更新提醒
+ * 从底部滑入的卡片，不是模态弹窗：用户可能正开着稿子在识别，
+ * 遮住整个面板打断他比不提醒更糟。所以做成「可以无视」的浮层 ——
+ * 不点就一直在，点了「稍后」才走，期间面板照常能用。
+ */
+.upd-card {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  /* 保险：面板里如果出现横向溢出（筛选条变长之类），
+     left/right 仍按视口算，但内容可能把卡片撑出边界。
+     有它就不会被裁掉右边的按钮。 */
+  max-width: calc(100vw - 24px);
+  bottom: 14px;
+  z-index: 65;
+  padding: 12px;
+  border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.88);
+  -webkit-backdrop-filter: var(--blur-l);
+  backdrop-filter: var(--blur-l);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--lift-3), var(--inset-hi);
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.upd-card.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.upd-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.upd-badge {
+  flex: 0 0 auto;
+  height: 19px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(180deg, #5f56ee, var(--accent));
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 19px;
+  letter-spacing: 0.02em;
+}
+
+.upd-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.upd-x {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+.upd-x:hover { background: rgba(22, 22, 44, 0.06); color: var(--ink); }
+
+.upd-date {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.upd-notes {
+  margin: 7px 0 0;
+  max-height: 92px;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.upd-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.upd-skip {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.upd-skip:hover { color: var(--muted); text-decoration: underline; }
+
+.upd-fallback {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.upd-fallback p {
+  margin: 0 0 5px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.upd-fallback input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--glass-line);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink-2);
+  font-family: Consolas, monospace;
+  font-size: 10px;
+}

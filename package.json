@@ -1,0 +1,28 @@
+{
+  "name": "fontdeck",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "tsx apps/service/src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "python scripts/verify-release.py",
+    "probe:flip": "python scripts/probe-flip180.py"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/node": "^26.6.6",
+    "fontkit": "^2.0.4",
+    "koffi": "^3.3.7",
+    "tesseract.js": "^5.1.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "wasm-feature-detect": "^1.5.1"
+  }
+}

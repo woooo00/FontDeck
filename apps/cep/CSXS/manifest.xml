@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<ExtensionManifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   ExtensionBundleId="com.fontdeck.panel"
+                   ExtensionBundleVersion="1.0"
+                   ExtensionBundleName="FontDeck"
+                   Version="7.0">
+  <ExtensionList>
+    <Extension Id="com.fontdeck.panel.main" Version="1.0"/>
+  </ExtensionList>
+
+  <ExecutionEnvironment>
+    <HostList>
+      <!-- 17.0 表示"最低 AI 17"，AI 29.6 满足。刻意不用区间写法，减少解析歧义 -->
+      <Host Name="ILST" Version="17.0"/>
+    </HostList>
+
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+
+    <!-- 声明最低 CSXS 6.0：本机 CEP 12 满足，且向下兼容。
+         写死 12.0 在部分宿主上会导致面板能显示但 API 不注入。 -->
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="6.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+
+  <DispatchInfoList>
+    <Extension Id="com.fontdeck.panel.main">
+      <DispatchInfo>
+        <ExtensionData>
+          <Version>1.0.0</Version>
+        </ExtensionData>
+
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <!-- 打开 CEP 内置的 Node 运行时：
+               面板自己就能以 windowsHide 方式拉起本地服务，
+               用户不需要开任何窗口。宿主不支持时该参数被忽略，不会崩。 -->
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+          <ScriptPath>./host/host.jsx</ScriptPath>
+        </Resources>
+
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+
+        <UI>
+          <Type>Panel</Type>
+          <Menu>FontDeck 字体库</Menu>
+          <Geometry>
+            <Size>
+              <Height>700</Height>
+              <Width>380</Width>
+            </Size>
+            <MinSize>
+              <Height>400</Height>
+              <Width>300</Width>
+            </MinSize>
+            <MaxSize>
+              <Height>2000</Height>
+              <Width>2000</Width>
+            </MaxSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
