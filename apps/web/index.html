@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FontDeck · 字体库</title>
-<link rel="stylesheet" href="style.css?v=62">
+<link rel="stylesheet" href="style.css?v=65">
 </head>
 <body>
 
@@ -75,6 +75,24 @@
       <p class="rec-hint">识别只在这台电脑上跑，图片不会上传。</p>
     </div>
 
+    <!-- 排列方向：决定分带轴向、OCR 旋转方向、以及恢复出来的文本框方向 -->
+    <div class="rec-orient">
+      <div class="rec-orient-label">文字排列方式</div>
+      <div class="rec-orient-seg" role="radiogroup" aria-label="文字排列方式">
+        <button type="button" id="recOrientH" class="rec-orient-opt is-active"
+                role="radio" aria-checked="true" data-orient="h">
+          <span class="rec-orient-ico ico-h" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>横排</span>
+        </button>
+        <button type="button" id="recOrientV" class="rec-orient-opt"
+                role="radio" aria-checked="false" data-orient="v">
+          <span class="rec-orient-ico ico-v" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>竖排</span>
+        </button>
+      </div>
+      <div class="rec-orient-hint" id="recOrientHint">从左到右读，恢复成横排文字。</div>
+    </div>
+
     <button id="recScanBtn" class="btn primary wide">识别选中的转曲文字</button>
     <div id="recProgress" class="rec-progress" hidden>
       <div class="rec-progress-track"><div id="recProgressBar" class="rec-progress-bar"></div></div>
@@ -133,7 +151,7 @@
   </div>
 </div>
 
-<script src="app.js?v=52"></script>
+<script src="app.js?v=55"></script>
 <script src="update.js?v=5"></script>
 
 <div id="dropHint" class="drop-hint"><span>松开即可安装字体</span></div>

@@ -257,7 +257,7 @@ export class OcrEngine {
    * 整行识别。逐字切框对西文不成立（字母不等宽、空格无轮廓），
    * 把整行图直接交给行识别器才能拿到带空格的完整句子。
    */
-  async recognizeLines(pngPath: string, boxes: PixelBox[], pad = 3): Promise<OcrResult[]> {
+  async recognizeLines(pngPath: string, boxes: PixelBox[], pad = 3, vertical = false): Promise<OcrResult[]> {
     if (boxes.length === 0) return [];
     if (!this.ready) await this.start();
     if (!this.proc) throw new Error("OCR 进程不可用");
@@ -278,7 +278,7 @@ export class OcrEngine {
 
       this.pending.set(id, { resolve, reject, timer });
       this.proc!.stdin.write(
-        JSON.stringify({ id, cmd: "line", png: pngPath, boxes, pad }) + "\n"
+        JSON.stringify({ id, cmd: "line", png: pngPath, boxes, pad, vertical }) + "\n"
       );
     });
   }
@@ -293,7 +293,8 @@ export class OcrEngine {
   async flipCheck(
     pngPath: string,
     boxes: number[][],
-    outPath: string
+    outPath: string,
+    vertical = false
   ): Promise<{ lines: OcrResult[]; avg: number; png: string }> {
     if (boxes.length === 0) return { lines: [], avg: 0, png: "" };
     if (!this.ready) await this.start();
@@ -315,6 +316,7 @@ export class OcrEngine {
           png: pngPath,
           boxes,
           out: outPath,
+          vertical,
         }) + "\n"
       );
     });
@@ -336,7 +338,8 @@ export class OcrEngine {
   async splitLine(
     pngPath: string,
     box: number[],
-    n: number
+    n: number,
+    vertical = false
   ): Promise<Array<{ l: number; t: number; r: number; b: number }>> {
     if (!this.ready) await this.start();
     if (!this.proc) throw new Error("OCR 进程不可用");
@@ -350,7 +353,7 @@ export class OcrEngine {
       }, 15000);
       this.pending.set(id, { resolve: (v: any) => resolve(v), reject, timer });
       this.proc!.stdin.write(
-        JSON.stringify({ id, cmd: "splitline", png: pngPath, box, n }) + "\n"
+        JSON.stringify({ id, cmd: "splitline", png: pngPath, box, n, vertical }) + "\n"
       );
     });
     const info = Array.isArray(raw) ? raw[0] : raw;
@@ -368,7 +371,8 @@ export class OcrEngine {
     pngPath: string,
     targets: Array<{ box: number[] | null; text: string; weight?: number }>,
     candidates: Array<{ id: string; path: string; index: number }>,
-    slices?: Array<{ box: number[]; text: string }>
+    slices?: Array<{ box: number[]; text: string }>,
+    vertical = false
   ): Promise<Array<{ id: string; score: number; weightFit?: number; widthRatio?: number }>> {
     if (targets.length === 0 || candidates.length === 0) return [];
     if (!this.ready) await this.start();
@@ -391,6 +395,7 @@ export class OcrEngine {
           targets,
           candidates,
           slices: slices ?? [],
+          vertical,
         }) + "\n"
       );
     });
@@ -405,12 +410,13 @@ export class OcrEngine {
    * 就是行框底，直接拿它对齐原稿墨迹底会让整行按 descender 上移。
    * `inkBottom`：这行字在该字体下的实际墨迹底比基线低多少（em，负数表示墨迹在基线之上）。
    * 两者相减就是「行框底 → 墨迹底」的补偿量，且随字体变化，所以必须逐个字体问。
+   * `inkHeight`：渲染的墨迹高 / 字号（em），竖排字号按「单字墨迹高 ÷ 它」闭环。
    */
   async fontMetrics(
     fonts: Array<[string, number]>,
     text: string
   ): Promise<
-    Array<{ path: string; index: number; descent: number; inkBottom: number }>
+    Array<{ path: string; index: number; descent: number; inkBottom: number; inkHeight: number }>
   > {
     if (!fonts.length) return [];
     if (!this.ready) await this.start();
@@ -443,13 +449,16 @@ export class OcrEngine {
     w: number,
     h: number,
     outPath: string,
-    ss = 3
+    ss = 3,
+    orientation: "h" | "v" = "h"
   ): Promise<{
     png: string;
     w: number;
     h: number;
     shapes: number[][];
     bands: number[][];
+    /** 渲染时的方向；bands 语义由它决定（h: y 区间，v: x 区间） */
+    orientation: "h" | "v";
     inkRatio: number;
     /** 倾斜稿摆正时记录逆变换；未摆正为 null */
     skew: {
@@ -485,7 +494,7 @@ export class OcrEngine {
       });
 
       this.proc!.stdin.write(
-        JSON.stringify({ id, cmd: "render", shapes, w, h, out: outPath, ss }) + "\n"
+        JSON.stringify({ id, cmd: "render", shapes, w, h, out: outPath, ss, orientation }) + "\n"
       );
     });
 

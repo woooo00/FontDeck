@@ -101,18 +101,21 @@ html, body {
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
-  /* 抽屉默认藏在右边界外（translateX(100%)），会把文档宽度撑大，
-     导致顶栏右侧的按钮被推出视口。这里必须裁掉横向溢出。
+  /* 这里刻意【不设】overflow-x。
 
-     ⚠ 必须是 clip，不能是 hidden。
-     `overflow-x: hidden` 会让计算值把 overflow-y 变成 auto，于是 body
-     成了滚动容器、而真正的滚动发生在 html 上 —— position:sticky 就失去
-     了参考系。实测滚 500px 后 topbar 的 getBoundingClientRect().top = -500，
-     顶栏 / tab / 筛选条全部跟着滚走。
-     `clip` 只裁剪、不创建滚动容器，sticky 才能照常相对视口工作。
-     第一行是给老引擎的兜底（那种引擎上 sticky 本来就是坏的，不能更坏）。 */
-  overflow-x: hidden;
-  overflow-x: clip;
+     历史：以前写过 `overflow-x: hidden; overflow-x: clip;`，理由是"抽屉藏到
+     屏幕外会撑宽文档、必须裁横向溢出"。但抽屉是 position:fixed，fixed 元素
+     用 transform 移出视口【不会】撑宽文档 —— 实测 scrollWidth==clientWidth，
+     那个前提是错的，两行 overflow-x 一直都是多余的。
+
+     更要命的是它们会搞坏吸顶：
+       - `hidden` 会把计算值里的 overflow-y 从 visible 变成 auto，body 因此
+         成为滚动容器，而真正的滚动仍发生在 html 上 —— position:sticky 失去
+         参考系，顶栏 / tab / 筛选条全部跟着卡片一起滚走（老版 Illustrator
+         的 CEP 内核不认识 `clip`、只吃到 `hidden`，就是这个症状）。
+       - `clip` 虽不创建滚动容器，但要 Chromium 90+ 才支持，老内核不认。
+     删掉两行后 overflow-y 保持 visible、body 不再是滚动容器，sticky 在
+     所有内核都相对视口正常工作。横向也确无溢出，无需裁剪。 */
 }
 
 /* 背景处理，两层：
@@ -2625,3 +2628,100 @@ body[data-pane="recover"] .tabs {
   filter: brightness(1.06);
   transform: translateY(-1px);
 }
+
+/* ================= 恢复转曲：横排 / 竖排 =================
+ * 放在识别按钮上方。方向必须在按下识别之前就选定，因为渲染端
+ * 切带轴向、OCR 旋转方向、AI 建框方向全由它决定，识别完再改没意义。
+ */
+.rec-orient {
+  margin: 0 0 14px;
+}
+
+.rec-orient-label {
+  margin-bottom: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.rec-orient-seg {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: rgba(22, 22, 44, 0.045);
+  border: 1px solid var(--line);
+}
+
+.rec-orient-opt {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.rec-orient-opt:hover {
+  color: var(--ink);
+}
+
+.rec-orient-opt.is-active {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--glass-line);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--lift-1);
+}
+
+/* 三根小笔画：横排是横着的三条，竖排是竖着的三条 */
+.rec-orient-ico {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.rec-orient-ico i {
+  display: block;
+  background: currentColor;
+  opacity: 0.75;
+  border-radius: 1px;
+}
+
+.ico-h {
+  flex-direction: column;
+  width: 13px;
+}
+.ico-h i { height: 2px; }
+.ico-h i:nth-child(1) { width: 11px; }
+.ico-h i:nth-child(2) { width: 13px; }
+.ico-h i:nth-child(3) { width: 8px; }
+
+.ico-v {
+  flex-direction: row;
+  align-items: stretch;
+  height: 13px;
+}
+.ico-v i { width: 2px; }
+.ico-v i:nth-child(1) { height: 11px; }
+.ico-v i:nth-child(2) { height: 13px; }
+.ico-v i:nth-child(3) { height: 8px; }
+
+.rec-orient-hint {
+  margin-top: 6px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--faint);
+}
+
+/* 方向切换后要求重新识别：是提醒不是错误，用橙色而不是红 */
+.rec-status.is-warn { color: var(--warn); }

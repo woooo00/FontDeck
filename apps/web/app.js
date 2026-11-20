@@ -1328,6 +1328,62 @@
 
   /* ---------------- 恢复转曲 ---------------- */
 
+  /*
+   * 排列方向。跟着机器走、不跟版本走：用户上一次选了竖排，
+   * 下次打开面板还是竖排。识别完成后不许改 —— 结果里的所有坐标、
+   * 字体推荐、文本框方向都是按当时那个方向算出来的。
+   */
+  var ORIENT_KEY = "fd.recover.orientation";
+  var recOrientation = "h";
+  try {
+    recOrientation = localStorage.getItem(ORIENT_KEY) === "v" ? "v" : "h";
+  } catch (e) { /* localStorage 被策略关掉时按横排 */ }
+
+  /* 发起识别用控件当前值；识别之后的一切操作必须用「这次识别实际用的方向」
+     （recScan.orientation），否则用户拨一下开关却没重新识别，坐标和方向就对不上了。 */
+  function isVertical() { return recOrientation === "v"; }
+  function scanVertical() {
+    return !!(recScan && recScan.orientation === "v");
+  }
+
+  function initOrient() {
+    var opts = document.querySelectorAll(".rec-orient-opt");
+    var hint = document.getElementById("recOrientHint");
+    function paint() {
+      for (var i = 0; i < opts.length; i++) {
+        var on = opts[i].getAttribute("data-orient") === recOrientation;
+        opts[i].classList.toggle("is-active", on);
+        opts[i].setAttribute("aria-checked", on ? "true" : "false");
+      }
+      if (hint) {
+        hint.textContent = isVertical()
+          ? "从右到左读，列内从上到下；恢复成竖排文字。"
+          : "从左到右读，恢复成横排文字。";
+      }
+    }
+    for (var j = 0; j < opts.length; j++) {
+      opts[j].addEventListener("click", function () {
+        var next = this.getAttribute("data-orient") === "v" ? "v" : "h";
+        if (next === recOrientation) return;
+        recOrientation = next;
+        try { localStorage.setItem(ORIENT_KEY, recOrientation); } catch (e) {}
+        paint();
+        /* 已有识别结果时必须提醒重新识别：结果里的坐标、字体推荐、
+           文本框方向都是按上一个方向算的，直接拿去恢复会错位。 */
+        if (recScan) {
+          var st = document.getElementById("recStatus");
+          if (st) {
+            st.textContent =
+              "方向已改为" + (isVertical() ? "竖排" : "横排") +
+              "，请重新识别选中的转曲文字。";
+            st.className = "rec-status is-warn";
+          }
+        }
+      });
+    }
+    paint();
+  }
+
   var recScanBtn = document.getElementById("recScanBtn");
   var recStatusEl = document.getElementById("recStatus");
   var recResultEl = document.getElementById("recResult");
@@ -1359,6 +1415,13 @@
    * 恢复时用它把行框底补回墨迹位置。
    */
   var recLifts = {};
+  /* ps 名 → 墨迹底相对基线的偏移（em，负数=墨迹底在基线下方）。
+     横排定位改用基线锚点：墨迹底 = 基线 + inkBottom×字号。AI 的
+     visibleBounds 底是含字体留白的行框底（实测比基线低约 0.5em），
+    跟字体度量的 descent 不是一回事，拿它对位必然整体偏上。 */
+  var recInkBottoms = {};
+  /** ps 名 → 墨迹高/字号（em）。竖排字号按「单字墨迹高 ÷ 它」闭环 */
+  var recInkHeights = {};
 
   function rememberLifts(list) {
     for (var i = 0; list && i < list.length; i++) {
@@ -1367,6 +1430,12 @@
       if (typeof c.descent !== "number" || typeof c.inkBottom !== "number") continue;
       recLifts[c.postScriptName] =
         Math.round((c.descent + c.inkBottom) * 1000) / 1000;
+      recInkBottoms[c.postScriptName] =
+        Math.round(c.inkBottom * 1000) / 1000;
+      if (typeof c.inkHeight === "number") {
+        recInkHeights[c.postScriptName] =
+          Math.round(c.inkHeight * 1000) / 1000;
+      }
     }
   }
   /* 最近一次识别的完整上下文，生成诊断日志时用 */
@@ -1581,7 +1650,9 @@
         recProgress(62, "渲染与识别");
         recWaitBegin();
         reportCtx.geom = geom;
+        reportCtx.ui.orientation = recOrientation;
 
+        geom.orientation = recOrientation;
         return fetch(API + "/api/recover/geometry", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1632,7 +1703,8 @@
 
     html += '<div class="rec-summary">';
     html += "<span>识别 <b>" + (s.chars || 0) + "</b> 个单元</span>";
-    html += "<span>行 <b>" + (s.rows || 0) + "</b></span>";
+    html += "<span>" + (d.orientation === "v" ? "列" : "行") +
+      " <b>" + (s.rows || 0) + "</b></span>";
     if (s.emptyCount) html += "<span>空白 <b>" + s.emptyCount + "</b></span>";
     html += "<span>耗时 <b>" + (s.durationMs || 0) + "ms</b></span>";
     html += "</div>";
@@ -1700,7 +1772,8 @@
           "%，可能有错字，粘原文重算。</div>";
       }
       html +=
-        '<div class="rec-line-label">整行识别结果 <span' +
+        '<div class="rec-line-label">' +
+        (d.orientation === "v" ? "整列识别结果" : "整行识别结果") + ' <span' +
         (lowConf ? ' class="is-low"' : "") +
         ">置信度 " +
         Math.round(topScore * 100) +
@@ -1712,8 +1785,11 @@
         esc(lineText) +
         "</textarea>";
       html +=
-        '<div class="rec-line-hint">恢复时直接用这里的内容（空格、标点都在）。' +
-        "英文必须用这个；要逐格改字再展开下面。</div>";
+        '<div class="rec-line-hint">' +
+        (d.orientation === "v"
+          ? "一列一行，从右列开始。恢复时直接用这里的内容，文本框会是竖排。"
+          : "恢复时直接用这里的内容（空格、标点都在）。英文必须用这个；要逐格改字再展开下面。") +
+        "</div>";
       /*
        * 行内分段：同一行里字号/字体不一样时要分开恢复。
        * 只支持单行（多行请先用「按行拆分」），控件只在单行时出现。
@@ -2153,7 +2229,9 @@
       btn.textContent = "拆分中…";
     }
 
-    postJson("/api/recover/split-line", { png: recScan.png, box: box, n: n })
+    postJson("/api/recover/split-line", {
+      png: recScan.png, box: box, n: n, vertical: scanVertical()
+    })
       .then(function (d) {
         if (!d || !d.ok) throw new Error((d && d.error) || "拆分失败");
         var segs = d.segments || [];
@@ -2164,6 +2242,7 @@
         return postJson("/api/recover/ocr-lines", {
           png: recScan.png,
           boxes: boxes,
+          vertical: scanVertical(),
         }).then(function (o) {
           var ocr = (o && o.lines) || [];
           var scale = Number(recScan.scale) || 1;
@@ -2175,7 +2254,9 @@
               font: "",
               fontAlt: "",
               candidates: [],
-              /* 段框是像素坐标，按行的 doc 线性换算（y 向上，所以用 b 差） */
+              /* 段框是像素坐标，按 doc 线性换算（y 向上，所以用 b 差）。
+                 横竖两路公式一样：段框本身已是原图像素坐标，方向只影响
+                 AI 侧怎么排列，不影响坐标换算。 */
               doc: {
                 x: ln.doc.x + (s.l - box[0]) / scale,
                 y: ln.doc.y + (box[3] - s.b) / scale,
@@ -2351,6 +2432,7 @@
     postJson("/api/recover/match", {
       png: recScan.png,
       chars: [],
+      vertical: scanVertical(),
       lines: [
         { text: s.text, box: [s.box.l, s.box.t, s.box.r, s.box.b], weight: 1 },
       ],
@@ -2412,7 +2494,29 @@
     var host = document.getElementById("recFontBox");
     if (!host) return;
 
-    var payload = { png: recScan.png, chars: [] };
+    var payload = {
+      png: recScan.png,
+      chars: [],
+      vertical: scanVertical(),
+      appjs: "55",  /* 诊断用：服务端日志据此确认面板加载的是哪一版脚本 */
+    };
+
+    /*
+     * 逐字切片始终下发（不再只在没有整行结果时才传）。
+     * 服务端拿它做「切片级字体比对」，这是区分字体的主证据（切片 0.8 权重）。
+     * 以前竖排有整行结果时 chars 恒为空，服务端只能拿躺倒的整列图去比，
+     * 相似度塌到 0.47、正确字体被埋 —— 横排整行图是正的所以没暴露。
+     * 服务端对切片有去重 + 文本匹配校验，多传不会污染整行结果。
+     */
+    for (var ci = 0; ci < (rec.chars || []).length; ci++) {
+      var cc = rec.chars[ci];
+      if (!cc.ch || !cc.box) continue;
+      payload.chars.push({
+        ch: cc.ch,
+        score: cc.score,
+        box: [cc.box.l, cc.box.t, cc.box.r, cc.box.b],
+      });
+    }
 
     /*
      * 逐行比对：每行带自己的真实墨迹框和文本，服务端按墨迹面积加权。
@@ -2449,19 +2553,10 @@
       }
     }
 
-    if (!payload.lines) {
-      /* 没有整行结果时才退回逐字样本；空的不参与 */
-      var samples = [];
-      for (var i = 0; i < (rec.chars || []).length; i++) {
-        var c = rec.chars[i];
-        if (!c.ch || !c.box) continue;
-        samples.push({ ch: c.ch, score: c.score, box: [c.box.l, c.box.t, c.box.r, c.box.b] });
-      }
-      if (samples.length === 0) {
-        host.innerHTML = "";
-        return;
-      }
-      payload.chars = samples;
+    /* 切片已在上面始终下发；这里只兜底「既没有整行、又没有任何逐字」的空结果 */
+    if (!payload.lines && payload.chars.length === 0) {
+      host.innerHTML = "";
+      return;
     }
 
     var busyFrom = Date.now();
@@ -2717,6 +2812,8 @@
           fontFamily: sg.fontFamily || sg.fontAlt || "",
           fontFull: sg.fontFull || "",
           lift: recLifts[sg.font] || 0,
+          inkBottom: recInkBottoms[sg.font] || 0,
+          inkHeight: recInkHeights[sg.font] || 0,
         });
       }
       if (items.length === 0) {
@@ -2767,12 +2864,15 @@
           y: round2(ln.doc.y),
           w: round2(ln.doc.w),
           h: round2(ln.doc.h),
+          charH: round2(ln.charH || 0),
           font: fontName,
           fontAlt: fontAlt,
           fontFamily: fontFamily || fontAlt,
           fontFull: fontFull,
           /* 行框底 → 墨迹底的垂直补偿（em），见 recLifts 注释 */
           lift: recLifts[fontName] || 0,
+          inkBottom: recInkBottoms[fontName] || 0,
+          inkHeight: recInkHeights[fontName] || 0,
         });
       }
       fromLine = items.length > 0;
@@ -2796,6 +2896,8 @@
           fontFamily: fontFamily || fontAlt,
           fontFull: fontFull,
           lift: recLifts[fontName] || 0,
+          inkBottom: recInkBottoms[fontName] || 0,
+          inkHeight: recInkHeights[fontName] || 0,
         });
       }
     }
@@ -2826,6 +2928,13 @@
      * fdRecoverApply 收的是一个 JSON 数组字符串。
      * 外面再套一层 JSON.stringify，把字符串变成合法的 JS 字面量参数。
      */
+    /*
+     * 方向跟着这一批 items 一起下发给 AI：竖排时 fdRecoverApply 会建
+     * 竖排文本框、按列高闭环字号、列间从右到左摆放。
+     */
+    for (var oi = 0; oi < items.length; oi++) {
+      items[oi].orientation = scanVertical() ? "v" : "h";
+    }
     var arg = JSON.stringify(JSON.stringify(items));
 
     evalJsx("fdRecoverApply(" + arg + ")", 45000)
@@ -3099,6 +3208,7 @@
   window.addEventListener("hashchange", openFromHash);
 
   initWelcome();
+  initOrient();
   load(true);
   openFromHash();
 })();

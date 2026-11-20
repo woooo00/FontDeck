@@ -116,7 +116,10 @@
     }
 
     function showFrame() {
-        frame.src = BASE + "/";
+        /* 首次加载也带时间戳：CEP 的 Chromium 99 会缓存 iframe 的 "/" 响应，
+           面板脚本升级后重启 AI 仍可能拿到旧副本（反复出现「改了没生效」）。
+           时间戳 + 服务端 no-store 双保险，确保每次打开都是最新代码。 */
+        frame.src = BASE + "/?t=" + Date.now();
         frame.style.display = "block";
         bootEl.style.display = "none";
     }

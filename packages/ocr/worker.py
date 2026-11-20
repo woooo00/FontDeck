@@ -356,7 +356,8 @@ def recognize_crops(engine, png_path: str, boxes, pad: int, dump_dir: str = "") 
     return out
 
 
-def recognize_lines(engine, png_path, boxes, pad: int = 3) -> list:
+def recognize_lines(engine, png_path, boxes, pad: int = 3,
+                    vertical: bool = False) -> list:
     """整行识别：把一整行的图直接交给行识别器，而不是切成一个个「字」。
 
     为什么必须有这条通道：
@@ -392,6 +393,15 @@ def recognize_lines(engine, png_path, boxes, pad: int = 3) -> list:
         if crop.size == 0:
             out.append({"text": "", "score": 0.0, "error": "empty_box", "box": box})
             continue
+
+        # 竖排：整列是「细高的竖条」，横向识别器读不了（实测原样 / 顺时针
+        # 90° 都是 0 分）。逆时针 90° 后，列变成横条且字向摆正，
+        # 「从上到下」正好变成「从左到右」——实测两句中文 0.830 / 0.868，
+        # 与横排整行识别同一水准。顺时针会把字上下颠倒，别用。
+        #
+        # 只旋转裁剪图，不动返回的 box：调用方仍按原图坐标做恢复定位。
+        if vertical:
+            crop = cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         if float((gray < 128).mean()) > 0.5:
@@ -768,6 +778,42 @@ def measure_ink_bottom(path, text, index=0):
         return 0.0
 
 
+_INK_H_CACHE = {}
+
+
+def measure_ink_height(path, text, index=0):
+    """渲染这段字量「墨迹高 / 字号」(em)。
+
+    竖排恢复字号按它闭环：目标字号 = 原稿单字墨迹高 / inkHeight。
+    比列高闭环准 —— 列高 = 字高×字数 + 字间距，拿它反推字号会把
+    字间距算进字里，字就偏小、间距偏大（实测字小约 3%、整列往中间挤）。
+    """
+    key = (str(path), int(index or 0), text)
+    if key in _INK_H_CACHE:
+        return _INK_H_CACHE[key]
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        size = 96
+        f = ImageFont.truetype(str(path), size, index=int(index or 0))
+        bb = f.getbbox(text)
+        pad = 40
+        w = max(1, int(bb[2] - bb[0]) + pad * 2)
+        h = max(1, int(bb[3] - bb[1]) + pad * 2)
+        im = Image.new("L", (w, h), 255)
+        ImageDraw.Draw(im).text((pad - bb[0], pad - bb[1]), text, font=f, fill=0)
+        rows = np.flatnonzero((np.array(im) < 128).any(axis=1))
+        if rows.size == 0:
+            _INK_H_CACHE[key] = 0.85  # 中文典型字面率兜底
+            return 0.85
+        val = float(rows.max() - rows.min() + 1) / float(size)
+        _INK_H_CACHE[key] = val
+        return val
+    except Exception:  # noqa: BLE001
+        _INK_H_CACHE[key] = 0.85
+        return 0.85
+
+
 # 行首常见的装饰符（项目符号、破折号、间隔点）。
 # 它们在文稿里是「图形」而不是字，字宽/字重与正文字体无关，
 # 却会被整行归一化放大成一行里最显眼的元素。
@@ -856,7 +902,8 @@ def consistency_penalty(src, cand, k_width=2.0, k_weight=2.0, k_slant=3.0):
             * math.exp(-k_slant * abs(da)))
 
 
-def compare_line_fonts(png_path, targets, candidates, slices=None):
+def compare_line_fonts(png_path, targets, candidates, slices=None,
+                       vertical=False):
     """用整行形状比对候选字体，支持多行加权。
 
     targets: [{"box": [l,t,r,b] | None, "text": str, "weight": float}]
@@ -903,6 +950,12 @@ def compare_line_fonts(png_path, targets, candidates, slices=None):
     if gray_full is None:
         return []
 
+    def orient(g):
+        """竖排整列 → 逆时针 90° 变横条，才能和横排渲染的候选字体比形状。"""
+        if vertical and g.size:
+            return cv2.rotate(g, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return g
+
     feats = []
     for t in targets:
         g = gray_full
@@ -914,6 +967,7 @@ def compare_line_fonts(png_path, targets, candidates, slices=None):
                 max(0, l) : min(gray_full.shape[1], r),
             ]
         text = str(t.get("text") or "")
+        g = orient(g)
         g, text = trim_lead_symbol(g, text)
         vec, stats, cheap = line_feature(g)
         if vec is None:
@@ -947,6 +1001,11 @@ def compare_line_fonts(png_path, targets, candidates, slices=None):
                 sub = gray_full[max(0, st_): min(_H, sb_), max(0, sl_): min(_W, sr_)]
                 if sub.size == 0:
                     continue
+                # 逐字切片是端正的单字框（pipeline 已把竖排坐标 unrot 回原图），
+                # 不能再旋转：orient() 只用于整列/整行长条图。把端正单字转 90°
+                # 会让它和候选字体的正立渲染完全对不上，余弦塌到 0.47 左右，
+                # 整批候选分数挤在一起、「正确字体排在下面」。横排时 orient 是
+                # 恒等，所以这个 bug 只在竖排出现。
                 sv = vectorize_crop(sub)
                 if sv is None:
                     continue
@@ -1600,7 +1659,7 @@ def rotate_geometry(shapes, w, h, deg, pad=10):
     return out, W2, H2, inv
 
 
-def split_line_gaps(png_path, box, n, pad=2):
+def split_line_gaps(png_path, box, n, pad=2, vertical=False):
     """把一行按**墨迹空隙**切成 n 段。
 
     为什么不让算法自己判断「哪里换了字体/字号」：
@@ -1635,6 +1694,12 @@ def split_line_gaps(png_path, box, n, pad=2):
     # 反相稿（白字黑底）也要能切
     if float(ink.mean()) > 0.5:
         ink = ~ink
+
+    # 竖排：把位图转置，于是「沿着阅读方向找空隙」仍然是 axis=0，
+    # 整套切分逻辑（空白段、最宽空白、刀位去重叠）一行都不用改。
+    # 只在最后把段框坐标换回原图（见下方 to_abs）。
+    if vertical:
+        ink = ink.T
 
     col = ink.sum(axis=0)
     width = int(col.size)
@@ -1726,24 +1791,53 @@ def split_line_gaps(png_path, box, n, pad=2):
             continue
         sub = ink[:, x0:x1]
         # 段首若挂着圆点/项目符号，先把图裁掉：否则这一段恢复出来的文字
-        # 会从符号位置起排，整段左移一个符号宽（实测约 2pt）
-        dx = _lead_symbol_cut(sub, line_h)
-        if dx > 0:
-            sub = sub[:, dx:]
-            x0 += dx
+        # 会从符号位置起排，整段左移一个符号宽（实测约 2pt）。
+        # 竖排在转置视图里跑，这个裁切方向就不对了，直接跳过。
+        if not vertical:
+            dx = _lead_symbol_cut(sub, line_h)
+            if dx > 0:
+                sub = sub[:, dx:]
+                x0 += dx
         ys = np.nonzero(sub.any(axis=1))[0]
         if len(ys) == 0:
             continue
-        out.append({
-            "l": l + x0,
-            "t": t + int(ys.min()),
-            "r": l + x1,
-            "b": t + int(ys.max()) + 1,
-        })
+        if vertical:
+            # 转置视图：x 方向是原图 y（阅读方向），ys 是原图 x（列内位置）
+            out.append({
+                "l": l + int(ys.min()),
+                "t": t + x0,
+                "r": l + int(ys.max()) + 1,
+                "b": t + x1,
+            })
+        else:
+            out.append({
+                "l": l + x0,
+                "t": t + int(ys.min()),
+                "r": l + x1,
+                "b": t + int(ys.max()) + 1,
+            })
     return out
 
 
-def render_geometry(shapes, w: int, h: int, out_path: str, ss: int = 3) -> dict:
+def find_col_bands(small):
+    """竖排稿：从 x 投影找出「列分界」，返回原图 x 区间 [[l, r], ...]。
+
+    复用 find_row_bands 而不是另写一套：把位图转置再上下翻转，
+    新的 y' = W - x，于是「原图从右到左的列」正好变成「新图从上到下的行」，
+    连中文竖排的阅读顺序都一起对齐了。分带逻辑（严格连续墨迹段优先、
+    核心带兜底、碎片段合并）是同一套，横竖两路不会各自漂移。
+
+    返回值仍是**原图 x 区间**，调用方不需要知道转置这回事；
+    顺序是从右到左（中文竖排传统）。
+    """
+    w = small.shape[1]
+    flipped = np.flipud(small.T)          # (W, H)，y' = W-1-x
+    bands_y = find_row_bands(flipped)     # y' 区间，从上到下 = 从右到左
+    return [[w - b, w - a] for [a, b] in bands_y]
+
+
+def render_geometry(shapes, w: int, h: int, out_path: str, ss: int = 3,
+                    orientation: str = "h") -> dict:
     """按 Illustrator 回传的路径几何自己画一张位图。
 
     这一步替代了原先「让 AI 导出 PNG」的做法。那个做法在真实文档上会卡死：
@@ -1761,9 +1855,14 @@ def render_geometry(shapes, w: int, h: int, out_path: str, ss: int = 3) -> dict:
 
     # 倾斜稿摆正。旋转的是几何点而不是位图：没有插值损失，控制柄也一起转，
     # 贝塞尔形状不变形。小角度/主轴不可靠时 skew 保持 None，走原路径。
-    angle, ratio = estimate_skew(shapes)
+    #
+    # estimate_skew 的判据是「横排行的水平主轴」，对竖排列不成立
+    # （它会把竖着的一列笔画当成倾斜行）。竖排直接跳过摆正，
+    # 让位图和 doc 坐标保持原始关系，避免把稿子转歪。
+    vertical = orientation == "v"
+    angle, ratio = (0.0, 0.0) if vertical else estimate_skew(shapes)
     skew = None
-    if abs(angle) >= 5.0 and ratio >= 4.0 and len(shapes) >= 8:
+    if not vertical and abs(angle) >= 5.0 and ratio >= 4.0 and len(shapes) >= 8:
         shapes, W, H, skew = rotate_geometry(shapes, W, H, angle)
 
     ss = max(1, min(4, int(ss)))
@@ -1833,7 +1932,10 @@ def render_geometry(shapes, w: int, h: int, out_path: str, ss: int = 3) -> dict:
         "h": H,
         "ss": ss,
         "shapes": boxes,
-        "bands": find_row_bands(small),
+        # 横排给 [t,b] 的 y 区间，竖排给 [l,r] 的 x 区间（从右到左）。
+        # 语义由 orientation 决定，调用方按方向解释。
+        "bands": find_col_bands(small) if vertical else find_row_bands(small),
+        "orientation": "v" if vertical else "h",
         "skew": skew,
         "inkRatio": round(ink / float(W * H), 4) if W * H else 0.0,
     }
@@ -1900,6 +2002,7 @@ def main() -> int:
                     int(req.get("h", 0)),
                     req["out"],
                     int(req.get("ss", 3)),
+                    str(req.get("orientation") or "h"),
                 )
                 results = [info]
             elif req.get("cmd") == "flipcheck":
@@ -1926,7 +2029,8 @@ def main() -> int:
                         boxes.append([W - r, H - bo, W - l, H - t])
                     # 翻正后上下行互换，按 y 重排，文本顺序才跟视觉一致
                     boxes.sort(key=lambda x: x[1])
-                    res = recognize_lines(engine, out_png, boxes, 3)
+                    res = recognize_lines(engine, out_png, boxes, 3,
+                                          bool(req.get("vertical")))
                     results = [{
                         "lines": res,
                         "avg": avg_score(res),
@@ -1942,6 +2046,7 @@ def main() -> int:
                         req["png"],
                         req.get("box") or [0, 0, 0, 0],
                         int(req.get("n") or 2),
+                        vertical=bool(req.get("vertical")),
                     )
                 }]
             elif req.get("cmd") == "metrics":
@@ -1959,6 +2064,7 @@ def main() -> int:
                         "index": fi,
                         "descent": m["descent"],
                         "inkBottom": measure_ink_bottom(fp, text, fi),
+                        "inkHeight": measure_ink_height(fp, text, fi),
                     })
                 results = [{"metrics": out_items}]
             elif req.get("cmd") == "linefont":
@@ -1975,12 +2081,14 @@ def main() -> int:
                     targets,
                     req.get("candidates") or [],
                     req.get("slices"),
+                    bool(req.get("vertical")),
                 )
                 results = [{"scores": scores}]
             elif req.get("cmd") == "line":
                 boxes = req.get("boxes") or []
                 pad = int(req.get("pad", 3))
-                results = recognize_lines(engine, req["png"], boxes, pad)
+                vert = bool(req.get("vertical"))
+                results = recognize_lines(engine, req["png"], boxes, pad, vert)
 
                 # 自动语种切换：中英模型不认西里尔字母，会把俄语按字形凑成
                 # 拉丁+数字。整篇平均分偏低时用东斯拉夫模型重跑一遍，
@@ -1988,7 +2096,7 @@ def main() -> int:
                 # 混进同一段文字。中文稿不会被接管（西里尔占比门槛）。
                 try:
                     if ru_available() and avg_score(results) < 0.86:
-                        alt = recognize_lines(get_engine("ru"), req["png"], boxes, pad)
+                        alt = recognize_lines(get_engine("ru"), req["png"], boxes, pad, vert)
                         if (
                             avg_score(alt) > avg_score(results) + 0.05
                             and cyrillic_ratio(alt) > 0.12

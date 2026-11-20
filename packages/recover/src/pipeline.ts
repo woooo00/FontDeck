@@ -15,6 +15,8 @@ import { clusterShapes, boxToDocPoint, type Box } from "./cluster.js";
 const require = createRequire(import.meta.url);
 const { Resvg } = require("@resvg/resvg-js");
 
+export type Orientation = "h" | "v";
+
 /** Illustrator 侧 fdRecoverScan 的返回 */
 export interface ScanPayload {
   png: string;
@@ -31,8 +33,14 @@ export interface ScanPayload {
   shapeCount: number;
   /** 每个轮廓的像素框 [l, t, r, b] */
   shapes: number[][];
-  /** 渲染位图 y 投影算出的行带 [t, b][]；有它就不靠 y 重叠猜分行 */
+  /**
+   * 渲染位图投影算出的分带 [a, b][]。
+   * h: y 区间（从上到下）；v: x 区间（从右到左，中文竖排阅读顺序）。
+   * 语义由 orientation 决定，别混用。
+   */
   bands?: number[][];
+  /** 文字排列方向；缺省按横排处理，保证旧调用方不改也能跑 */
+  orientation?: Orientation;
   /** 倾斜稿摆正的逆变换；未摆正时为空 */
   skew?: SkewTransform | null;
 }
@@ -104,14 +112,22 @@ export interface RecognizedLine {
   doc: { x: number; y: number; w: number; h: number };
   /** 行级几何：字宽比（字符紧致宽高比中位数）/ 墨迹密度 / 倾角（度） */
   stats?: { width: number; density: number; angle: number };
+  /**
+   * 这一行内「单个字」的墨迹高（文档 pt）中位数。
+   * 竖排恢复字号按它闭环，而不是整列高 —— 整列高 = 字高×字数 + 字间距，
+   * 拿它反推字号会把「字间距」算进字里，字就偏小、间距偏大。
+   */
+  charH?: number;
 }
 
 export interface RecoverResult {
   chars: RecognizedChar[];
   /** 整行识别结果。西文必须走这条，逐字框对字母不成立 */
   lines: RecognizedLine[];
-  /** 渲染位图算出的行分界，原样带回给前端（诊断日志要用） */
+  /** 渲染位图算出的分界，原样带回给前端（诊断日志要用） */
   bands: number[][];
+  /** 本次识别用的排列方向 */
+  orientation: Orientation;
   text: string;
   /** 倾斜稿摆正的逆变换，诊断日志要用；未摆正为 null */
   skew: SkewTransform | null;
@@ -147,6 +163,8 @@ export interface RecoverOptions {
    * 逐字兜底恢复在极端情况下仍可用（只是文字为空，需用户粘贴）。
    */
   skipCharOcr?: boolean;
+  /** 竖排时按列分带、整列旋转识别、坐标转置聚类 */
+  orientation?: Orientation;
 }
 
 /**
@@ -227,7 +245,28 @@ function renderDebug(
 }
 
 /** 把聚类出来的字框按 y 合并成「行框」，供整行识别取图 */
-function groupLineBoxes(chars: Box[], tol: number): Box[] {
+function groupLineBoxes(chars: Box[], tol: number, vertical: boolean): Box[] {
+  if (vertical) {
+    /* 竖排：按 x 中心分列，列间从右到左 */
+    const sorted = [...chars].sort((a, b) => b.l - a.l);
+    const cols: Box[] = [];
+    for (const b of sorted) {
+      const cx = (b.l + b.r) / 2;
+      let target: Box | null = null;
+      for (const c of cols) {
+        if (Math.abs((c.l + c.r) / 2 - cx) <= tol) { target = c; break; }
+      }
+      if (target) {
+        target.l = Math.min(target.l, b.l);
+        target.t = Math.min(target.t, b.t);
+        target.r = Math.max(target.r, b.r);
+        target.b = Math.max(target.b, b.b);
+      } else {
+        cols.push({ ...b });
+      }
+    }
+    return cols.sort((a, b) => b.l - a.l);
+  }
   const sorted = [...chars].sort((a, b) => a.t - b.t);
   const rows: Box[] = [];
   for (const b of sorted) {
@@ -259,8 +298,12 @@ function groupLineBoxes(chars: Box[], tol: number): Box[] {
  * 时，全宽框比实际文字宽一大截（实测第二行 995px 的框里只有 525px 有字）。
  * 恢复时拿它做字号闭环，字号就被按比例放大，用户看到的就是「字号不对」。
  */
-function inkBoxInBand(band: Box, shapes: Box[]): Box {
+function inkBoxInBand(band: Box, shapes: Box[], vertical: boolean): Box {
   const inside = shapes.filter((s) => {
+    if (vertical) {
+      const ox = Math.min(s.r, band.r) - Math.max(s.l, band.l);
+      return ox > 0 && ox / Math.max(1, s.r - s.l) > 0.5;
+    }
     const overlap = Math.min(s.b, band.b) - Math.max(s.t, band.t);
     return overlap > 0 && overlap / Math.max(1, s.b - s.t) > 0.5;
   });
@@ -277,10 +320,10 @@ function inkBoxInBand(band: Box, shapes: Box[]): Box {
     b = Math.max(b, s.b);
   }
   return {
-    l: Math.max(0, l),
-    t: Math.max(band.t, t),
-    r: Math.min(band.r, r),
-    b: Math.min(band.b, b),
+    l: vertical ? Math.max(band.l, l) : Math.max(0, l),
+    t: vertical ? Math.max(0, t) : Math.max(band.t, t),
+    r: vertical ? Math.min(band.r, r) : Math.min(band.r, r),
+    b: vertical ? Math.min(band.b, b) : Math.min(band.b, b),
   };
 }
 
@@ -294,11 +337,51 @@ function inkBoxInBand(band: Box, shapes: Box[]): Box {
  * 判据同时看文本和几何：只有「行首连续点 + 该行墨迹明显靠右」才删，
  * 避免误伤真的以省略号开头、且墨迹本来就靠左的句子。
  */
-function trimHallucinatedDots(text: string, ink: Box, canvasW: number): string {
+function trimHallucinatedDots(
+  text: string, ink: Box, canvasW: number, vertical: boolean, canvasH: number
+): string {
   const m = /^\s*[.．…]{2,}\s*/.exec(text);
   if (!m) return text;
-  if (canvasW > 0 && ink.l > canvasW * 0.05) return text.slice(m[0].length);
+  /* 竖排整列逆时针旋转后，原图的「列顶空白」变成旋转图的「行左空白」，
+     同样会诱发幻觉点，判据换成墨迹顶到画布顶的距离。 */
+  const lead = vertical ? ink.t : ink.l;
+  const span = vertical ? canvasH : canvasW;
+  if (span > 0 && lead > span * 0.05) return text.slice(m[0].length);
   return text;
+}
+
+/**
+ * 竖排整列文本的逐字兜底校正。
+ *
+ * 中文竖排的单个字是端正的，但整列图送进横排 OCR 前必须旋转 90°，
+ * 一转字就躺倒，RapidOCR 对躺倒字会认成形近字（实测「滚滚长江东逝水」
+ * 整列被读成「濠濠长江东逝水」，前两字全错），而同一批字的逐字框是
+ * 端正原图切出来的，逐字 OCR 全对。字体比对拿错的整列文本去渲染，
+ * 余弦从 0.84 塌到 0.50，于是「文字认错 + 字体不对 + 字号自检报警」
+ * 一起爆出来，其实根因只有整列 OCR 这一处。
+ *
+ * 只在窄条件下生效：每个聚类单元都认出一个单汉字、字数与单元数一致。
+ * 横排绝不能这么做 —— 西文字母按字宽切框不成立，逐字对西文只会得到
+ * 乱码，那边整行通道才是主通道。识别文本是原地改的（lines 引用）。
+ */
+export function correctVerticalLineText(
+  chars: RecognizedChar[],
+  lines: RecognizedLine[]
+): void {
+  if (chars.length === 0) return;
+  const allHan = chars.every((c) => /^[\u3400-\u9fff]$/.test(c.ch ?? ""));
+  if (!allHan) return;
+  const charText = chars.map((c) => c.ch).join("");
+  if (charText.length !== chars.length) return;
+  const avg = chars.reduce((s, c) => s + (c.score || 0), 0) / chars.length;
+  for (const line of lines) {
+    if (charText !== line.text) {
+      line.text = charText;
+      /* 整列置信度是躺倒 OCR 给的，不可信；逐字全中时用逐字平均分兜底，
+         避免面板弹出「置信度低、可能有错字」的误导提示。 */
+      line.score = Math.max(line.score ?? 0, avg);
+    }
+  }
 }
 
 export async function recognizeScan(
@@ -314,6 +397,10 @@ export async function recognizeScan(
     throw new Error("拒绝读取工作目录之外的图片");
   }
 
+  const orientation: Orientation = options.orientation ?? scan.orientation ?? "h";
+  const vertical = orientation === "v";
+  const W = scan.pngW;
+
   const shapes: Box[] = (scan.shapes ?? [])
     .map(([l, t, r, b]) => ({ l, t, r, b }))
     .filter((b) => b.r > b.l && b.b > b.t);
@@ -322,11 +409,34 @@ export async function recognizeScan(
     ? scan.bands.filter((x) => Array.isArray(x) && x.length === 2)
     : [];
 
-  const clustered = clusterShapes(shapes, {
+  /*
+   * 竖排用「坐标旋转」复用横排聚类，不复制第二套算法。
+   *
+   * 逆时针 90°：(x, y) → (y, W - x)。旋转后：
+   *   原图从右到左的列 → 旋转图从上到下的行（中文竖排阅读顺序）
+   *   原图列内从上到下 → 旋转图行内从左到右
+   * 于是 clusterShapes 那套「按 y 分带、行内按 x 贪心合并」原封不动就能用。
+   * 这和 worker 里整列逆时针旋转 90° 再送 OCR 是同一个变换，方向一致。
+   *
+   * 只在这里做，输出（chars / lines / doc / 标注图）全部换回原图坐标，
+   * 所以 boxToDocPoint、skew 逆变换、AI 侧位置逻辑都不用动。
+   */
+  const rot = (b: Box): Box => ({ l: b.t, t: W - b.r, r: b.b, b: W - b.l });
+  const unrot = (b: Box): Box => ({ l: W - b.b, t: b.l, r: W - b.t, b: b.r });
+
+  const clusterInput = vertical ? shapes.map(rot) : shapes;
+  const clusterBands = vertical
+    ? bands.map(([l, r]) => [W - r, W - l])
+    : bands;
+
+  const clusteredRaw = clusterShapes(clusterInput, {
     charWidthRatio: options.charWidthRatio,
     mergeRatio: options.mergeRatio,
-    rowBands: bands,
+    rowBands: clusterBands,
   });
+  const clustered = vertical
+    ? { ...clusteredRaw, chars: clusteredRaw.chars.map(unrot) }
+    : clusteredRaw;
 
   const engine = getOcrEngine();
   const ocrBoxes = clustered.chars.map(
@@ -342,21 +452,26 @@ export async function recognizeScan(
      没有 bands 时（例如旧数据 / 单独调 recognize 接口）才退回按字框合并 */
   const lineBoxes: Box[] =
     bands.length > 0
-      ? bands.map(([t, b]) => ({ l: 0, t, r: scan.pngW, b }))
+      ? vertical
+        /* 整列全高：左右留白让逆时针旋转后的识别器正常断句 */
+        ? bands.map(([l, r]) => ({ l, t: 0, r, b: scan.pngH }))
+        : bands.map(([t, b]) => ({ l: 0, t, r: scan.pngW, b }))
       : groupLineBoxes(
           clustered.chars,
-          Math.max(4, clustered.stats.charHeight * 0.5)
+          Math.max(4, clustered.stats.charHeight * 0.5),
+          vertical
         );
   const lineResults = await engine.recognizeLines(
     scan.png,
     lineBoxes.map((b) => [b.l, b.t, b.r, b.b] as [number, number, number, number]),
-    3
+    3,
+    vertical
   );
 
   /* 恢复 / 字体比对用真实墨迹框；没有 bands 时 lineBoxes 本身已是墨迹并集 */
   const inkBoxes: Box[] =
     bands.length > 0
-      ? lineBoxes.map((b) => inkBoxInBand(b, shapes))
+      ? lineBoxes.map((b) => inkBoxInBand(b, shapes, vertical))
       : lineBoxes;
 
   /*
@@ -374,12 +489,27 @@ export async function recognizeScan(
       hForDoc
     );
 
+  /*
+   * 单字墨迹高（文档 pt）中位数：聚类的单字框已 unrot 回原图坐标，
+   * 经 toDoc 换算即真实字高。竖排恢复字号用它闭环，避免把字间距算进字号。
+   */
+  const charHeights = clustered.chars
+    .map((b) => toDoc(b).h)
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b);
+  const medianCharH = charHeights.length
+    ? charHeights[Math.floor(charHeights.length / 2)]
+    : 0;
+
   const lines: RecognizedLine[] = lineBoxes.map((_box, i) => {
     const ink = inkBoxes[i] ?? _box;
     const r = lineResults[i] ?? { text: "", score: 0 };
     return {
-      text: trimHallucinatedDots(String(r.text ?? ""), ink, scan.pngW),
+      text: trimHallucinatedDots(
+        String(r.text ?? ""), ink, scan.pngW, vertical, scan.pngH
+      ),
       score: r.score ?? 0,
+      charH: Math.round(medianCharH * 100) / 100,
       engine: (r as any).engine,
       /* 行级几何（字宽比/密度/倾角）：诊断日志和字体匹配的一致性核对要用 */
       stats: (r as any).stats,
@@ -404,6 +534,11 @@ export async function recognizeScan(
 
   const emptyCount = chars.filter((c) => !c.ch && !c.skipped).length;
   const scored = chars.filter((c) => c.ch);
+
+  if (vertical && !skipCharOcr) {
+    correctVerticalLineText(chars, lines);
+  }
+
   const avgScore = scored.length > 0
     ? scored.reduce((s, c) => s + c.score, 0) / scored.length
     : lines.length > 0
@@ -423,6 +558,7 @@ export async function recognizeScan(
     chars,
     lines,
     bands,
+    orientation,
     text: chars.some((c) => c.ch)
       ? chars.map((c) => c.ch).join("")
       : lines.map((l) => l.text).join("\n"),

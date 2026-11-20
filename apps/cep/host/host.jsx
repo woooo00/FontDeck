@@ -328,6 +328,22 @@ function fdApplyTrace(msg) {
     } catch (e) {}
 }
 
+/**
+ * 读 POINTTEXT 文本框的锚点（= 基线左端）文档 y。
+ * 横排定位靠它绕开 visibleBounds 的行框留白：墨迹底 = 基线 + inkBottom×字号。
+ * 不同 AI 版本 anchor 返回 [x,y] 数组或 {x,y} 对象，两种都兼容。
+ */
+function fdAnchorY(tf) {
+    try {
+        var a = tf.anchor;
+        if (a) {
+            if (fdFinite(a[1])) return a[1];
+            if (fdFinite(a.y)) return a.y;
+        }
+    } catch (e) {}
+    return NaN;
+}
+
 /** 有限数校验：NaN / Infinity 一旦塞进 AI 的原生属性会直接让进程 fail-fast */
 function fdFinite(v) {
     return typeof v === "number" && isFinite(v);
@@ -754,13 +770,10 @@ function fdRecoverApply(json) {
             return '{"ok":false,"error":"没有打开文档"}';
         }
 
-        /* 逐行落盘：万一又崩，最后一行就是崩溃点（AI 不会留任何堆栈） */
-        try {
-            var tf0 = new File(FD_RECOVER_DIR + "/apply-trace.log");
-            tf0.open("w");
-            tf0.writeln("=== apply start " + new Date().toString() + " ===");
-            tf0.close();
-        } catch (et) {}
+        /* 逐行落盘：万一又崩，最后一行就是崩溃点（AI 不会留任何堆栈）。
+           用追加而不是清空 —— 横排恢复后用户常紧接着测竖排，清空会把横排的
+           trace 冲掉，而横排位置问题恰恰只看那一次的 dy/bounds。 */
+        fdApplyTrace("=== apply start " + new Date().toString() + " ===");
         fdApplyTrace("enter items=" + json.length + "B");
 
         /* ExtendScript 没有可靠的 JSON.parse，eval 是这里唯一稳的写法。
@@ -770,6 +783,14 @@ function fdRecoverApply(json) {
             return '{"ok":false,"error":"没有要恢复的内容"}';
         }
         fdApplyTrace("parsed n=" + items.length);
+
+        /*
+         * 排列方向跟着这一批 items 走。竖排不只是「建个竖排文本框」：
+         * 分带轴向、字号闭环、tracking、位置对齐全都要从 x 换到 y。
+         * 一整批只允许一个方向，识别结果里的坐标也是按这个方向算出来的。
+         */
+        var vertical = items[0].orientation === "v";
+        fdApplyTrace("orientation=" + (vertical ? "v" : "h"));
 
         var doc = app.activeDocument;
         var layer = doc.layers.add();
@@ -792,7 +813,7 @@ function fdRecoverApply(json) {
         var medH = hs.length > 0 ? hs[Math.floor(hs.length / 2)] : 10;
         if (!(medH > 0)) medH = 10;
 
-        /* 行容差取 0.6 倍字高：上下两行字的中线间距至少是一个字高 */
+        /* 行/列容差取 0.6 倍字高：相邻行（列）中线间距至少是一个字高 */
         var rowTol = medH * 0.6;
 
         var rows = [];
@@ -800,10 +821,11 @@ function fdRecoverApply(json) {
             var it = items[j];
             if (!it.ch) continue;
 
-            /* 整行识别来的数据自带行号，直接用，不再靠 y 容差猜 */
+            /* 整行（整列）识别来的数据自带行号，直接用，不再靠坐标容差猜。
+               竖排时这个行号就是「从右到左的列号」，顺序天然正确。 */
             if (typeof it.row === "number" && it.row >= 0) {
                 while (rows.length <= it.row) {
-                    rows.push({ y: 0, list: [] });
+                    rows.push({ y: 0, x: 0, list: [] });
                 }
                 rows[it.row].list.push(it);
                 continue;
@@ -811,16 +833,37 @@ function fdRecoverApply(json) {
 
             var target = null;
             for (var k = 0; k < rows.length; k++) {
-                if (Math.abs(rows[k].y - it.y) <= rowTol) {
+                /* 竖排按 x 中心分列；横排按 y 中心分行 */
+                var d = vertical
+                    ? Math.abs(rows[k].x - it.x)
+                    : Math.abs(rows[k].y - it.y);
+                if (d <= rowTol) {
                     target = rows[k];
                     break;
                 }
             }
             if (!target) {
-                target = { y: it.y, list: [] };
+                target = { y: it.y, x: it.x, list: [] };
                 rows.push(target);
             }
             target.list.push(it);
+        }
+
+        /* 没有行号（逐字兜底）时，横排按 y 降序、竖排按 x 降序排，
+           保证「从上到下」「从右到左」的视觉顺序 */
+        var hasRowNo = false;
+        for (var rn = 0; rn < items.length; rn++) {
+            if (typeof items[rn].row === "number" && items[rn].row >= 0) {
+                hasRowNo = true;
+                break;
+            }
+        }
+        if (!hasRowNo) {
+            rows.sort(function (a, b) {
+                var ca = vertical ? a.x : a.y;
+                var cb = vertical ? b.x : b.y;
+                return cb - ca;
+            });
         }
 
         if (rows.length === 0) {
@@ -852,8 +895,9 @@ function fdRecoverApply(json) {
         /* ---------- 2. 每行建一个文本框 ---------- */
         for (var r = 0; r < rows.length; r++) {
             var row = rows[r];
+            /* 横排行内从左到右（x 升序）；竖排列内从上到下（doc y 降序） */
             row.list.sort(function (a, b) {
-                return a.x - b.x;
+                return vertical ? b.y - a.y : a.x - b.x;
             });
 
             var text = "";
@@ -881,6 +925,30 @@ function fdRecoverApply(json) {
                 fdApplyTrace("r" + r + " add");
                 tf.kind = TextType.POINTTEXT;
                 fdApplyTrace("r" + r + " kind");
+                /*
+                 * 竖排：TextFrameItem.orientation（CS6+，VERTICAL=1）。
+                 * 设不上就明确报错并丢掉这个框 —— 静默退回横排最坑，
+                 * 用户会拿到一堆横躺的文字却以为成功了。
+                 */
+                if (vertical) {
+                    var orientOk = false;
+                    try {
+                        tf.orientation = TextOrientation.VERTICAL;
+                        orientOk = true;
+                    } catch (eO1) {
+                        try {
+                            tf.orientation = 1;
+                            orientOk = true;
+                        } catch (eO2) {}
+                    }
+                    if (!orientOk) {
+                        try { tf.remove(); } catch (eRm) {}
+                        errors.push("第" + (r + 1) + "列：本机 Illustrator 不支持竖排文本框");
+                        fdApplyTrace("r" + r + " orientation FAILED");
+                        continue;
+                    }
+                    fdApplyTrace("r" + r + " orientation=VERTICAL");
+                }
                 tf.contents = text;
                 fdApplyTrace("r" + r + " contents " + text.length + "ch");
 
@@ -946,6 +1014,17 @@ function fdRecoverApply(json) {
                 if (!(targetW > 0)) targetW = n * medW;
 
                 /*
+                 * 竖排字号闭环换成「整列高度」。doc 坐标 y 向上：
+                 * first 是列内最上面的字（按 y 降序排过），
+                 * first.y + first.h 是列墨迹顶，lastIt.y 是列墨迹底。
+                 * n=1（整列恢复）时 targetH 正好等于该列墨迹高。
+                 */
+                var targetH = (first.y + (first.h > 0 ? first.h : medH)) - lastIt.y;
+                if (!(targetH > 0)) targetH = n * medH;
+                /* 后面所有闭环都用这个主轴长度，横排=宽、竖排=高 */
+                var targetSpan = vertical ? targetH : targetW;
+
+                /*
                  * 字号：用「整行宽度」闭环，不用墨迹高。
                  *
                  * 旧写法拿墨迹高去除 AI 的 visibleBounds 高度 —— 后者是行框，
@@ -961,12 +1040,34 @@ function fdRecoverApply(json) {
                 fdApplyTrace("r" + r + " mark-12");
                 var b1 = tf.visibleBounds;
                 fdApplyTrace("r" + r + " bounds1");
-                var w1 = b1[2] - b1[0];
-                if (w1 > 0.01 && fdFinite(targetW)) {
-                    var sz = 12 * (targetW / w1);
+                var span1 = vertical ? (b1[1] - b1[3]) : (b1[2] - b1[0]);
+                var charH = fdFinite(first.charH) ? first.charH : 0;
+                var inkH = fdFinite(first.inkHeight) ? first.inkHeight : 0;
+                if (vertical && charH > 0 && inkH > 0.1) {
+                    /*
+                     * 竖排字号按「单字墨迹高」闭环：字号 = 原稿单字墨迹高 / 字面率。
+                     * 列高 = 字高×字数 + 字间距，拿列高反推会把字间距算进字号，
+                     * 字就偏小、间距偏大（实测字小 ~3%、整列往中间挤）。
+                     *
+                     * inkHeight 是服务端 PIL 渲染测的字面率，但 AI 用同一字体的
+                     * 墨迹高比 PIL 系统性小（华文新魏实测：PIL 0.865 / AI 0.80）——
+                     * 直接用 PIL 值会把字号算小。0.925 是把 PIL 口径换算到 AI 的
+                     * 经验系数，由「滚滚长江东逝水」华文新魏稿截图逐字量得：
+                     * 11.63pt 时 AI 实测字高 9.26pt → 字面率 0.796 → 0.796/0.865≈0.92。
+                     */
+                    var szV = charH / (inkH * 0.92);
+                    if (fdFinite(szV) && szV > 0.1 && szV < 2000) attr.size = szV;
+                    fdApplyTrace(
+                        "r" + r + " V-SIZE charH=" + charH + " inkH=" + inkH +
+                        " size=" + attr.size
+                    );
+                } else if (span1 > 0.01 && fdFinite(targetSpan)) {
+                    var sz = 12 * (targetSpan / span1);
                     if (fdFinite(sz) && sz > 0.1 && sz < 2000) attr.size = sz;
                 }
-                fdApplyTrace("row " + r + " w1=" + w1 + " targetW=" + targetW + " size=" + attr.size);
+                fdApplyTrace("row " + r + " span1=" + span1 +
+                    " targetSpan=" + targetSpan + " size=" + attr.size +
+                    " dir=" + (vertical ? "v" : "h"));
 
                 /*
                  * 高度保险：行墨迹高来自真实轮廓，是精确真值，字号不该比它
@@ -985,10 +1086,13 @@ function fdRecoverApply(json) {
 
                 /* 二次残差才用 tracking 补，正常情况下这个值接近 0 */
                 var b2 = tf.visibleBounds;
-                var w2 = b2[2] - b2[0];
+                var span2 = vertical ? (b2[1] - b2[3]) : (b2[2] - b2[0]);
                 var tr = 0;
-                if (n > 1 && w2 > 0.01) {
-                    tr = ((targetW - w2) / ((n - 1) * attr.size)) * 1000;
+                /* tracking 是逐字符间距，判断和计算都要用字符数，
+                   不是 item 数 —— 整列识别只有 1 个 item 但有 7 个字。 */
+                var gaps = (vertical ? text.length : n) - 1;
+                if (gaps > 0 && span2 > 0.01) {
+                    tr = ((targetSpan - span2) / (gaps * attr.size)) * 1000;
                     if (fdFinite(tr) && tr > -300 && tr < 2000) attr.tracking = tr;
                     else tr = 0;
                 }
@@ -1008,15 +1112,76 @@ function fdRecoverApply(json) {
                  */
                 var b3 = tf.visibleBounds;
                 fdApplyTrace("r" + r + " bounds3");
-                var lift = fdFinite(first.lift) ? first.lift : 0;
-                var targetBottom = first.y - lift * attr.size;
-                var dx = first.x - b3[0];
-                var dy = targetBottom - b3[3];
+                /*
+                 * 竖排：对齐到「列首字墨迹顶」而不是「行首字墨迹底」。
+                 * lift 是服务端按横排渲染测的垂直补偿（行框底→墨迹底），
+                 * 竖排时物理方向变了，不能用，直接置 0 —— 用错了
+                 * 整列会整体横移一个 descender 的距离。
+                 */
+                var lift = vertical ? 0 : (fdFinite(first.lift) ? first.lift : 0);
+                var inkBottom = fdFinite(first.inkBottom) ? first.inkBottom : 0;
+                var targetTop = first.y + (first.h > 0 ? first.h : 0);
+                var dx, dy, wantY, alignY;
+                var baseAnchorY = fdAnchorY(tf);
+
+                if (vertical) {
+                    /*
+                     * 竖排 X：按「列中心」对齐，不是框左边缘。
+                     * 竖排文本框的 visibleBounds 左右围绕锚点对称（实测 [-5.81,+5.82]），
+                     * 把框左边缘对齐到原文列左边，会让整列右移半个字宽。
+                     * 列中心 = first.x + first.w/2，框中心 = (b3.l+b3.r)/2。
+                     */
+                    var colCx = first.x + (first.w > 0 ? first.w : 0) / 2;
+                    var boxCx = (b3[0] + b3[2]) / 2;
+                    dx = colCx - boxCx;
+                    /* visibleBounds[1]（行框顶）对齐列墨迹顶，实测正常 */
+                    wantY = targetTop;
+                    alignY = b3[1];
+                    dy = wantY - alignY;
+                } else {
+                    /* 横排 X：框左边缘对齐原文行首 */
+                    dx = first.x - b3[0];
+                    if (fdFinite(baseAnchorY)) {
+                        /*
+                         * 横排 Y：改用基线锚点定位，绕开 visibleBounds 的行框留白。
+                         * AI 的 visibleBounds[3] 比基线低约 0.5em（字体 ascent/descender
+                         * 留白），不是墨迹底，拿字体度量的 descent 去补是两套体系 ——
+                         * 实测整行因此上移约 0.4em。墨迹底 = 基线 + inkBottom×字号
+                         * 是同一套字体度量里的关系，反推目标基线才准。
+                         */
+                        wantY = first.y - inkBottom * attr.size;   // 目标基线 y
+                        alignY = baseAnchorY;                       // 当前基线 y
+                    } else {
+                        /* anchor 读不到时的兜底：退回旧的 visibleBounds 方案 */
+                        wantY = first.y - lift * attr.size;
+                        alignY = b3[3];
+                    }
+                    dy = wantY - alignY;
+                }
+                fdApplyTrace(
+                    "r" + r + " POS first.xy=(" + first.x + "," + first.y +
+                    ") h=" + first.h + " lift=" + lift + " inkBottom=" + inkBottom +
+                    " size=" + (Math.round(attr.size * 100) / 100) +
+                    " b3=[" + Array.prototype.slice.call(b3).join(",") + "]" +
+                    " anchorY=" + (Math.round(baseAnchorY * 100) / 100) +
+                    " alignY=" + (Math.round(alignY * 100) / 100) +
+                    " wantY=" + (Math.round(wantY * 100) / 100) +
+                    " dy=" + (Math.round(dy * 100) / 100)
+                );
                 if (fdFinite(dx) && fdFinite(dy)) {
                     tf.translate(dx, dy);
                     var b4 = tf.visibleBounds;
-                    var ex = first.x - b4[0];
-                    var ey = targetBottom - b4[3];
+                    /* X 二次修正：竖排按列中心，横排按左边缘，和第一次保持一致 */
+                    var ex = vertical
+                        ? colCx - (b4[0] + b4[2]) / 2
+                        : first.x - b4[0];
+                    var ey;
+                    if (!vertical && fdFinite(baseAnchorY)) {
+                        /* 横排二次修正也走基线，收敛更快 */
+                        ey = wantY - fdAnchorY(tf);
+                    } else {
+                        ey = wantY - (vertical ? b4[1] : b4[3]);
+                    }
                     var fixed = 0;
                     if (
                         fdFinite(ex) &&
@@ -1026,11 +1191,17 @@ function fdRecoverApply(json) {
                         tf.translate(ex, ey);
                         fixed = 1;
                     }
+                    var b5 = tf.visibleBounds;
                     fdApplyTrace(
-                        "r" + r + " lift=" + lift +
-                        " dy=" + Math.round(dy * 100) / 100 +
+                        "r" + r + " dy=" + Math.round(dy * 100) / 100 +
                         " resid=" + Math.round(ey * 100) / 100 +
                         " fixed=" + fixed +
+                        " b5=[" + Array.prototype.slice.call(b5).join(",") + "]" +
+                        " finalAnchorY=" + (Math.round(fdAnchorY(tf) * 100) / 100) +
+                        " finalBottom=" + (vertical ? b5[1] : b5[3]) +
+                        " wantY=" + (Math.round(wantY * 100) / 100) +
+                        " tracking=" + Math.round(tr) +
+                        " chars=" + text.length +
                         " boxH/size=" +
                         Math.round(((b4[1] - b4[3]) / (attr.size || 1)) * 100) / 100
                     );
@@ -1041,8 +1212,11 @@ function fdRecoverApply(json) {
                 lastCalib = {
                     size: Math.round(attr.size * 100) / 100,
                     tracking: Math.round(tr),
-                    targetW: Math.round(targetW * 10) / 10,
-                    actualW: Math.round((b3[2] - b3[0]) * 10) / 10
+                    targetW: Math.round(targetSpan * 10) / 10,
+                    actualW: Math.round(
+                        (vertical ? (b3[1] - b3[3]) : (b3[2] - b3[0])) * 10
+                    ) / 10,
+                    orientation: vertical ? "v" : "h"
                 };
 
                 created++;
@@ -1063,7 +1237,8 @@ function fdRecoverApply(json) {
                 ? '{"size":' + lastCalib.size +
                   ',"tracking":' + lastCalib.tracking +
                   ',"targetW":' + lastCalib.targetW +
-                  ',"actualW":' + lastCalib.actualW + '}'
+                  ',"actualW":' + lastCalib.actualW +
+                  ',"orientation":"' + lastCalib.orientation + '"}'
                 : 'null') +
             ',"errors":' + fdArr(errors) +
             "}"

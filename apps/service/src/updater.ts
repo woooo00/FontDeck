@@ -17,6 +17,7 @@ import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import tls from "node:tls";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { URL } from "node:url";
 
@@ -237,10 +238,15 @@ class TunnelAgent extends https.Agent {
     super({ keepAlive: false, maxSockets: 1 });
     this.sock = sock;
   }
-  createConnection(_opts: any, cb: any) {
+  createConnection(
+    _opts: http.RequestOptions,
+    cb?: (err: Error | null, stream: Duplex) => void
+  ): Duplex | null {
     const s = this.sock;
     this.sock = null;
-    cb(null, s);
+    // 正常路径 s 必有值且只取用一次（keepAlive:false / maxSockets:1）
+    if (cb) cb(null, s as Duplex);
+    return s;
   }
 }
 

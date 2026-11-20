@@ -68,7 +68,14 @@ function buildReportText(id: string, body: any): string {
     `画布 ${geom.w ?? "?"}×${geom.h ?? "?"}，轮廓 ${geom.shapeCount ?? "?"} 条，scale ${geom.scale ?? "?"}，origin (${geom.originX ?? "?"}, ${geom.originY ?? "?"})`
   );
   push(`选区内真实文本框 ${geom.textFrames ?? "?"}，墨迹占比 ${rec.gear?.inkRatio ?? "?"}`);
-  push(`行分界 bands：${JSON.stringify(rec.bands ?? geom.bands ?? [])}`);
+  /* 竖排时 bands 是 x 区间（从右到左），不标方向会被当成 y 区间误读 */
+  const orient: string = String(
+    rec.orientation ?? geom.orientation ?? body.env?.orientation ?? "h"
+  );
+  push(
+    (orient === "v" ? "列分界 bands（x 区间，右→左）：" : "行分界 bands（y 区间，上→下）：") +
+      JSON.stringify(rec.bands ?? geom.bands ?? [])
+  );
   if (rec.skew) {
     push(
       `倾斜：检测到 ${rec.skew.angle}°，已自动摆正；下面的行墨迹框是摆正后坐标系，恢复位置已逆变换回原稿`
@@ -780,7 +787,11 @@ function serveStatic(res: http.ServerResponse, urlPath: string) {
     }
     res.writeHead(200, {
       "Content-Type": MIME[path.extname(full)] ?? "application/octet-stream",
-      "Cache-Control": "no-cache",
+      /* CEP 的 Chromium 99 对 no-cache 也会用磁盘旧副本，面板改了不生效、
+         反复出现「改了没反应」。改成 no-store 彻底禁缓存。 */
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
+      "Expires": "0",
     });
     res.end(data);
   });
@@ -943,15 +954,16 @@ async function probeSplitSegments(
   png: string,
   box: number[],
   pool: FontFace[],
-  wholeScore: number
+  wholeScore: number,
+  vertical = false
 ): Promise<any> {
   try {
     const engine = getOcrEngine();
-    const raw = await engine.splitLine(png, box, 2);
+    const raw = await engine.splitLine(png, box, 2, vertical);
     if (!Array.isArray(raw) || raw.length !== 2) return null;
 
     const boxes = raw.map((b) => [b.l, b.t, b.r, b.b] as [number, number, number, number]);
-    const texts = await engine.recognizeLines(png, boxes, 3);
+    const texts = await engine.recognizeLines(png, boxes, 3, vertical);
     const out: any[] = [];
     for (let i = 0; i < boxes.length; i++) {
       const text = String(texts[i]?.text ?? "").trim();
@@ -963,7 +975,9 @@ async function probeSplitSegments(
           id: f.id,
           path: f.filePath,
           index: f.collectionIndex ?? 0,
-        }))
+        })),
+        undefined,
+        vertical
       );
       const byId = new Map(scores.map((s) => [s.id, s]));
       const ranked = pool
@@ -1153,6 +1167,10 @@ async function handlePost(
         return;
       }
 
+      /* 排列方向：缺省 h。竖排时渲染端按 x 投影切列、OCR 端整列旋转 */
+      const orientation: "h" | "v" = body.orientation === "v" ? "v" : "h";
+      const vertical = orientation === "v";
+
       const w = Number(body.w ?? 0);
       const h = Number(body.h ?? 0);
       if (!(w > 0 && h > 0)) {
@@ -1199,7 +1217,8 @@ async function handlePost(
           w * RS,
           h * RS,
           pngPath.replace(/\\/g, "/"),
-          3
+          3,
+          orientation
         );
 
         const scan = {
@@ -1216,6 +1235,7 @@ async function handlePost(
           shapes: rendered.shapes,
           /* 位图 y 投影算出的行分界，多行识别全靠它 */
           bands: rendered.bands ?? [],
+          orientation,
           /* 倾斜稿摆正的逆变换，pipeline 用它把 doc 坐标变回原始画布 */
           skew: rendered.skew ?? null,
         } as any;
@@ -1226,6 +1246,7 @@ async function handlePost(
           /* 8 行以上走整行通道即可：逐字 OCR 在长稿上要跑几百次，
              而逐字校对区已隐藏，实测 18 行俄语稿省下约 45 秒 */
           skipCharOcr: (rendered.bands ?? []).length >= 8,
+          orientation,
         });
 
         /*
@@ -1260,7 +1281,8 @@ async function handlePost(
             const flip = await getOcrEngine().flipCheck(
               rendered.png,
               boxes,
-              flipPng
+              flipPng,
+              vertical
             );
             flipAvg = Number(flip.avg || 0);
             likelyFlipped180 = flipAvg > 0.75 && flipAvg > ocrAvg + 0.3;
@@ -1289,6 +1311,7 @@ async function handlePost(
           originY: scan.originY,
           textFrames: scan.textFrames,
           bands: rendered.bands ?? [],
+          orientation,
           skew: rendered.skew ?? null,
           gear: { totalMs: Date.now() - t0, inkRatio: rendered.inkRatio },
           /* 倒转自检：面板据此给「先转正再识别」的提示，不改动识别结果 */
@@ -1307,6 +1330,7 @@ async function handlePost(
       const raw = await readBody(req, 4 * 1024 * 1024);
       const body = JSON.parse(raw.toString("utf-8") || "{}");
 
+      const orientation: "h" | "v" = body.orientation === "v" ? "v" : "h";
       const scan = {
         png: String(body.png ?? ""),
         pngW: Number(body.pngW ?? 0),
@@ -1320,6 +1344,7 @@ async function handlePost(
         shapeCount: Number(body.shapeCount ?? 0),
         shapes: Array.isArray(body.shapes) ? body.shapes : [],
         bands: Array.isArray(body.bands) ? body.bands : [],
+        orientation,
       };
 
       if (!scan.png || scan.shapes.length === 0) {
@@ -1331,6 +1356,7 @@ async function handlePost(
         const result = await recognizeScan(scan, {
           charWidthRatio: body.charWidthRatio ? Number(body.charWidthRatio) : undefined,
           mergeRatio: body.mergeRatio ? Number(body.mergeRatio) : undefined,
+          orientation,
         });
         json(res, { ok: true, ...result });
       } catch (e: any) {
@@ -1378,7 +1404,9 @@ async function handlePost(
       }
 
       try {
-        const segments = await getOcrEngine().splitLine(png, box, Math.round(n));
+        const segments = await getOcrEngine().splitLine(
+          png, box, Math.round(n), body.vertical === true
+        );
         json(res, { ok: true, segments });
       } catch (e: any) {
         json(res, { ok: false, error: e?.message ?? "拆分失败" }, 500);
@@ -1411,7 +1439,7 @@ async function handlePost(
         const clean = boxes
           .filter((b: any) => Array.isArray(b) && b.length >= 4)
           .map((b: any) => b.slice(0, 4).map(Number));
-        const out = await getOcrEngine().recognizeLines(png, clean, 3);
+        const out = await getOcrEngine().recognizeLines(png, clean, 3, body.vertical === true);
         json(res, {
           ok: true,
           lines: out.map((r: any) => ({
@@ -1430,11 +1458,26 @@ async function handlePost(
       const body = JSON.parse(raw.toString("utf-8") || "{}");
 
       const png = String(body.png ?? "");
+      const vertical = body.vertical === true;
       const chars = Array.isArray(body.chars) ? body.chars : [];
       const lineText = String(body.lineText ?? "").trim();
       const lineBox = Array.isArray(body.lineBox) ? body.lineBox : null;
       /* 新版面板传多行：每行带自己的墨迹框和文本，逐行比对再加权 */
       const lineRows = Array.isArray(body.lines) ? body.lines : [];
+      /* 诊断：记录面板实际下发的参数，排查「切片没参与比对」这类前端问题 */
+      try {
+        const lg = path.join(recoverDir(), "match-request.log");
+        fs.appendFileSync(
+          lg,
+          new Date().toISOString() +
+            " vertical=" + vertical +
+            " chars=" + chars.length +
+            " lines=" + lineRows.length +
+            " lineText=" + JSON.stringify(lineText) +
+            " appjs=" + String(body.appjs ?? "") +
+            "\n"
+        );
+      } catch {}
       if (!png || (chars.length === 0 && !lineText && lineRows.length === 0)) {
         json(res, { ok: false, error: "缺少图片或字符数据" }, 400);
         return;
@@ -1547,7 +1590,8 @@ async function handlePost(
               path: f.filePath,
               index: f.collectionIndex ?? 0,
             })),
-            slices
+            slices,
+            vertical
           );
           const byId = new Map(scores.map((s) => [s.id, s]));
           ranked = pool
@@ -1592,7 +1636,8 @@ async function handlePost(
                 png,
                 targets[0].box as number[],
                 pool,
-                whole
+                whole,
+                vertical
               );
             }
           }
@@ -1643,7 +1688,7 @@ async function handlePost(
          *   inkBottom 这行字在该字体下墨迹底比基线低多少（负数=墨迹在基线之上）
          * 前端算 lift = descent + inkBottom，恢复时把行框底换成墨迹底。
          */
-        const lifts = new Map<string, { descent: number; inkBottom: number }>();
+        const lifts = new Map<string, { descent: number; inkBottom: number; inkHeight: number }>();
         try {
           const sampleText = matchText;
           const pairs: Array<[string, number]> = [];
@@ -1685,6 +1730,9 @@ async function handlePost(
             rel: Math.round((c.score / topScore) * 100),
             descent: m ? Math.round(m.descent * 1000) / 1000 : null,
             inkBottom: m ? Math.round(m.inkBottom * 1000) / 1000 : null,
+            inkHeight: m && typeof m.inkHeight === "number"
+              ? Math.round(m.inkHeight * 1000) / 1000
+              : null,
           };
         });
 
